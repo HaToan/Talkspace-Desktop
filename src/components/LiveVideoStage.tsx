@@ -639,6 +639,21 @@ function DesktopConference({
     }
   }, [MINI_CAROUSEL_BREAKPOINT])
 
+  // Auto-expand the window when the drawer opens in mini/small mode,
+  // and restore mini size when the drawer closes.
+  // State is tracked on the Electron side (miniDrawerExpandState Map) so the
+  // renderer doesn't need to mirror it — calling collapse when no state exists
+  // is a safe no-op.
+  useEffect(() => {
+    const api = (window as any).electronAPI
+    const drawerOpen = widgetState.showChat || widgetState.showSettings
+    if (drawerOpen && window.innerWidth <= 400) {
+      api?.expandForDrawer?.()
+    } else if (!drawerOpen) {
+      api?.collapseFromDrawer?.()
+    }
+  }, [widgetState.showChat, widgetState.showSettings])
+
   useEffect(() => {
     if (
       preferredSubscribedScreenShareTrack &&
@@ -810,6 +825,12 @@ function DesktopConference({
       behavior: 'smooth',
     })
   }, [canNavigateMiniCarousel])
+  const chatDrawerClassName = `desktop-vc-drawer desktop-vc-drawer--chat${
+    widgetState.showChat ? ' desktop-vc-drawer--open' : ''
+  }`
+  const settingsDrawerClassName = `lk-settings-menu-modal desktop-vc-drawer desktop-vc-drawer--settings${
+    widgetState.showSettings ? ' desktop-vc-drawer--open' : ''
+  }`
 
   return (
     <LayoutContextProvider value={layoutContext} onWidgetChange={setWidgetState}>
@@ -879,11 +900,10 @@ function DesktopConference({
           )}
           <DesktopControlBar audience={audience} onMessage={onMessage} />
         </div>
-        <Chat style={{ display: widgetState.showChat ? 'grid' : 'none' }} />
-        <div
-          className="lk-settings-menu-modal"
-          style={{ display: widgetState.showSettings ? 'block' : 'none' }}
-        >
+        <div className={chatDrawerClassName} aria-hidden={!widgetState.showChat}>
+          <Chat />
+        </div>
+        <div className={settingsDrawerClassName} aria-hidden={!widgetState.showSettings}>
           <SettingsPanel />
         </div>
       </div>
@@ -1106,7 +1126,11 @@ export default function LiveVideoStage(props: Props) {
           --desktop-vc-header-height: 44px;
           --desktop-vc-control-bar-height: 72px;
           --desktop-vc-control-gap: 0px;
-          --desktop-vc-focus-stage-top-gap: 6px;
+          --desktop-vc-control-bar-pad-y: 12px;
+          --desktop-vc-control-bar-pad-x: 18px;
+          --desktop-vc-control-bar-gap-size: 10px;
+          --desktop-vc-control-button-size: 46px;
+          --desktop-vc-focus-stage-top-gap: 12px;
           --desktop-vc-carousel-inline-inset: 10px;
           --desktop-vc-carousel-top-padding: 4px;
           --desktop-vc-carousel-bottom-padding: 8px;
@@ -1371,6 +1395,10 @@ export default function LiveVideoStage(props: Props) {
             --desktop-vc-header-height: 36px;
             --desktop-vc-control-bar-height: 46px;
             --desktop-vc-control-gap: 0px;
+            --desktop-vc-control-bar-pad-y: 6px;
+            --desktop-vc-control-bar-pad-x: 8px;
+            --desktop-vc-control-bar-gap-size: 4px;
+            --desktop-vc-control-button-size: 32px;
             --desktop-vc-focus-stage-top-gap: 4px;
             --desktop-vc-carousel-inline-inset: 8px;
             --desktop-vc-carousel-top-padding: 4px;
@@ -1392,8 +1420,8 @@ export default function LiveVideoStage(props: Props) {
           }
           /* Control bar nhỏ hơn ở mini mode */
           .desktop-vc-shell .lk-control-bar {
-            padding: 6px 8px 8px;
-            gap: 4px;
+            padding: var(--desktop-vc-control-bar-pad-y) var(--desktop-vc-control-bar-pad-x);
+            gap: var(--desktop-vc-control-bar-gap-size);
             max-height: 46px !important;
             min-height: 46px;
           }
@@ -1401,8 +1429,8 @@ export default function LiveVideoStage(props: Props) {
           .desktop-vc-shell .lk-control-bar .lk-disconnect-button,
           .desktop-vc-shell .lk-control-bar .lk-chat-toggle,
           .desktop-vc-shell .lk-control-bar .lk-settings-toggle {
-            width: 32px;
-            height: 32px;
+            width: var(--desktop-vc-control-button-size);
+            height: var(--desktop-vc-control-button-size);
             border-radius: 8px;
           }
           .desktop-vc-shell .lk-video-conference-inner {
@@ -1493,7 +1521,12 @@ export default function LiveVideoStage(props: Props) {
         @media (max-width: 260px) {
           .desktop-vc-shell {
             --desktop-vc-fixed-focus-stage-size: 230px;
-            --desktop-vc-focus-stage-top-gap: 20px;
+            --desktop-vc-focus-stage-top-gap: 15px;
+            --desktop-vc-control-bar-height: 52px;
+            --desktop-vc-control-bar-pad-y: 5px;
+            --desktop-vc-control-bar-pad-x: 6px;
+            --desktop-vc-control-bar-gap-size: 5px;
+            --desktop-vc-control-button-size: 34px;
           }
           .desktop-vc-shell .lk-focus-layout {
             grid-template-rows: var(--desktop-vc-fixed-focus-stage-size) minmax(0, 1fr);
@@ -1566,6 +1599,28 @@ export default function LiveVideoStage(props: Props) {
           .desktop-vc-shell .desktop-vc-mini-carousel-nav__btn:disabled:hover {
             border-color: rgba(118, 144, 160, 0.28);
             background: rgba(8, 12, 16, 0.72);
+          }
+          .desktop-vc-shell .lk-control-bar {
+            justify-content: space-evenly;
+            padding: var(--desktop-vc-control-bar-pad-y) var(--desktop-vc-control-bar-pad-x);
+            gap: var(--desktop-vc-control-bar-gap-size);
+            min-height: var(--desktop-vc-control-bar-height);
+            max-height: var(--desktop-vc-control-bar-height) !important;
+          }
+          .desktop-vc-shell .lk-control-bar .lk-button,
+          .desktop-vc-shell .lk-control-bar .lk-disconnect-button,
+          .desktop-vc-shell .lk-control-bar .lk-chat-toggle,
+          .desktop-vc-shell .lk-control-bar .lk-settings-toggle {
+            width: var(--desktop-vc-control-button-size);
+            height: var(--desktop-vc-control-button-size);
+            border-radius: 10px;
+          }
+          .desktop-vc-shell .lk-control-bar .lk-chat-toggle {
+            width: 44px;
+          }
+          .desktop-vc-shell .desktop-vc-control-icon {
+            font-size: 10px;
+            letter-spacing: 0.02em;
           }
         }
         .desktop-vc-shell .lk-grid-layout > *,
@@ -1653,9 +1708,9 @@ export default function LiveVideoStage(props: Props) {
           z-index: 100;
           display: flex;
           justify-content: center;
-          gap: 10px;
+          gap: var(--desktop-vc-control-bar-gap-size);
           align-items: center;
-          padding: 12px 18px 14px;
+          padding: var(--desktop-vc-control-bar-pad-y) var(--desktop-vc-control-bar-pad-x);
           box-sizing: border-box;
           min-height: var(--desktop-vc-control-bar-height);
           max-height: none;
@@ -1676,8 +1731,8 @@ export default function LiveVideoStage(props: Props) {
         .desktop-vc-shell .lk-control-bar .lk-disconnect-button,
         .desktop-vc-shell .lk-control-bar .lk-chat-toggle,
         .desktop-vc-shell .lk-control-bar .lk-settings-toggle {
-          width: 46px;
-          height: 46px;
+          width: var(--desktop-vc-control-button-size);
+          height: var(--desktop-vc-control-button-size);
           padding: 0;
           display: inline-flex;
           align-items: center;
@@ -1722,17 +1777,17 @@ export default function LiveVideoStage(props: Props) {
           letter-spacing: 0.04em;
           text-transform: uppercase;
         }
-        .desktop-vc-shell .lk-chat,
-        .desktop-vc-shell .lk-settings-menu-modal {
-          position: absolute;
-          top: 76px;
-          right: 12px;
+        .desktop-vc-shell .desktop-vc-drawer {
+          position: fixed;
+          top: var(--desktop-vc-header-height);
+          left: auto;
+          right: 0;
           bottom: calc(var(--desktop-vc-control-bar-height) + var(--desktop-vc-control-gap));
-          width: min(360px, 34vw);
-          min-width: 300px;
+          width: min(360px, 92vw);
+          min-width: min(280px, 92vw);
           margin: 0;
-          border-radius: 22px;
-          border: 1px solid rgba(118, 144, 160, 0.14);
+          border-left: 1px solid rgba(118, 144, 160, 0.14);
+          border-radius: 0;
           background:
             radial-gradient(circle at top right, rgba(56, 201, 188, 0.08), transparent 28%),
             linear-gradient(180deg, rgba(13, 18, 24, 0.98), rgba(7, 10, 14, 0.98));
@@ -1740,8 +1795,31 @@ export default function LiveVideoStage(props: Props) {
             inset 0 1px 0 rgba(255, 255, 255, 0.03),
             -18px 0 44px rgba(0, 0, 0, 0.34);
           overflow: hidden;
-          z-index: 20;
+          z-index: 180;
           backdrop-filter: blur(18px);
+          transform: translateX(100%);
+          opacity: 0;
+          pointer-events: none;
+          transition: transform 180ms ease, opacity 140ms ease;
+        }
+        .desktop-vc-shell .desktop-vc-drawer--open {
+          transform: translateX(0);
+          opacity: 1;
+          pointer-events: auto;
+        }
+        .desktop-vc-shell .desktop-vc-drawer--settings {
+          padding: 0 !important;
+          align-items: stretch !important;
+          gap: 0 !important;
+        }
+        .desktop-vc-shell .desktop-vc-drawer--settings > .desktop-vc-settings {
+          width: 100%;
+          height: 100%;
+        }
+        .desktop-vc-shell .desktop-vc-drawer > .lk-chat,
+        .desktop-vc-shell .desktop-vc-drawer > .desktop-vc-settings {
+          height: 100%;
+          margin: 0;
         }
         .desktop-vc-shell .lk-chat-header,
         .desktop-vc-shell .desktop-vc-settings__header {
@@ -1832,11 +1910,9 @@ export default function LiveVideoStage(props: Props) {
           box-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
         }
         @media (max-width: 900px) {
-          .desktop-vc-shell .lk-chat,
-          .desktop-vc-shell .lk-settings-menu-modal {
-            left: 12px;
-            width: auto;
-            min-width: 0;
+          .desktop-vc-shell .desktop-vc-drawer {
+            width: min(360px, 96vw);
+            min-width: min(260px, 96vw);
           }
         }
       `}</style>

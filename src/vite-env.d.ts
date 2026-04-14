@@ -112,6 +112,15 @@ declare global {
         success: boolean
         error?: string
       }>
+      expandForDrawer: () => Promise<{
+        success: boolean
+        expanded?: boolean
+        error?: string
+      }>
+      collapseFromDrawer: () => Promise<{
+        success: boolean
+        error?: string
+      }>
       saveRecording: (payload: {
         bytes: Uint8Array
         defaultFileName: string

@@ -1083,6 +1083,57 @@ app.whenReady().then(() => {
     return { success: true }
   })
 
+  // Expand window width so the drawer (chat/settings) can render at full size.
+  // Saves the current mini-mode bounds so we can restore them later.
+  const miniDrawerExpandState = new Map()
+
+  ipcMain.handle('window:expand-for-drawer', (event) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
+
+    const currentBounds = senderWindow.getBounds()
+    // Target: 400px keeps the compact layout while letting the 360px drawer render in full.
+    const display = screen.getDisplayMatching(currentBounds)
+    const workArea = display.workArea
+    const targetWidth = Math.min(400, workArea.width - 16)
+
+    if (currentBounds.width >= targetWidth) return { success: true, expanded: false }
+
+    miniDrawerExpandState.set(senderWindow.id, {
+      bounds: currentBounds,
+      maxSize: senderWindow.getMaximumSize(),
+      minSize: senderWindow.getMinimumSize(),
+    })
+
+    // Remove max-size lock that mini mode sets, then expand leftward keeping right edge fixed.
+    senderWindow.setMaximumSize(0, 0)
+    const rightEdge = currentBounds.x + currentBounds.width
+    const newX = Math.max(workArea.x + 8, rightEdge - targetWidth)
+    senderWindow.setBounds({ x: newX, y: currentBounds.y, width: targetWidth, height: currentBounds.height }, true)
+
+    return { success: true, expanded: true }
+  })
+
+  // Restore window to its pre-expansion mini-mode bounds.
+  ipcMain.handle('window:collapse-from-drawer', (event) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
+
+    const savedState = miniDrawerExpandState.get(senderWindow.id)
+    if (!savedState) return { success: false }
+
+    miniDrawerExpandState.delete(senderWindow.id)
+
+    const { bounds, maxSize, minSize } = savedState
+    if (maxSize[0] > 0 || maxSize[1] > 0) {
+      senderWindow.setMaximumSize(maxSize[0], maxSize[1])
+    }
+    senderWindow.setMinimumSize(minSize[0], minSize[1])
+    senderWindow.setBounds(bounds, true)
+
+    return { success: true }
+  })
+
   ipcMain.handle('window:exit-mini-mode', (event) => {
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
     if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
