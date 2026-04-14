@@ -1046,12 +1046,18 @@ app.whenReady().then(() => {
     if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
 
     const miniWidth = 250
-    const miniHeight = 250
+    const miniMinHeight = 620
 
     const display = screen.getDisplayMatching(senderWindow.getBounds())
     const workArea = display.workArea
     const boundedMiniWidth = Math.min(miniWidth, workArea.width - 24)
-    const boundedMiniHeight = Math.min(miniHeight, workArea.height - 24)
+    const maxMiniHeight = Math.max(200, workArea.height - 24)
+    const boundedMiniMinHeight = Math.min(miniMinHeight, maxMiniHeight)
+    const currentHeight = senderWindow.getBounds().height
+    const boundedMiniHeight = Math.max(
+      boundedMiniMinHeight,
+      Math.min(currentHeight, maxMiniHeight),
+    )
 
     let x = workArea.x + workArea.width - miniWidth - 16
     let y = workArea.y + 16
@@ -1068,10 +1074,10 @@ app.whenReady().then(() => {
     x = Math.max(workArea.x + 8, Math.min(x, workArea.x + workArea.width - boundedMiniWidth - 8))
     y = Math.max(workArea.y + 8, Math.min(y, workArea.y + workArea.height - boundedMiniHeight - 8))
 
-    senderWindow.setResizable(false)
     senderWindow.setAlwaysOnTop(true, 'floating')
-    senderWindow.setMinimumSize(boundedMiniWidth, boundedMiniHeight)
-    senderWindow.setMaximumSize(boundedMiniWidth, boundedMiniHeight)
+    senderWindow.setResizable(true)
+    senderWindow.setMinimumSize(boundedMiniWidth, boundedMiniMinHeight)
+    senderWindow.setMaximumSize(boundedMiniWidth, maxMiniHeight)
     senderWindow.setBounds({ x, y, width: boundedMiniWidth, height: boundedMiniHeight }, true)
 
     return { success: true }
@@ -1081,12 +1087,26 @@ app.whenReady().then(() => {
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
     if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
 
+    const display = screen.getDisplayMatching(senderWindow.getBounds())
+    const workArea = display.workArea
+    const targetWidth = Math.min(Math.max(420, Math.floor(workArea.width * 0.28)), workArea.width - 16)
+    const targetHeight = workArea.height
+    const targetX = workArea.x + workArea.width - targetWidth
+    const targetY = workArea.y
+
     senderWindow.setResizable(true)
     senderWindow.setAlwaysOnTop(false)
     senderWindow.setMinimumSize(DEFAULT_CONFERENCE_MIN_SIZE[0], DEFAULT_CONFERENCE_MIN_SIZE[1])
     senderWindow.setMaximumSize(0, 0)
-    senderWindow.setBounds({ width: 1280, height: 840 }, true)
-    senderWindow.center()
+    senderWindow.setBounds(
+      {
+        x: targetX,
+        y: targetY,
+        width: targetWidth,
+        height: targetHeight,
+      },
+      true,
+    )
 
     return { success: true }
   })

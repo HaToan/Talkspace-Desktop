@@ -2348,6 +2348,9 @@ function ConferenceView({
           serverUrl={livekitUrl}
           roomTitle={room.title}
           roomName={room.roomName}
+          hostId={room.hostId}
+          hostName={room.hostName}
+          hostUsername={room.hostUsername}
           localUserName={currentUser.name}
           localUsername={currentUser.username}
           localAvatarUrl={currentUser.avatar}
@@ -3162,5 +3165,4 @@ function CreateRoomModal({
 }
 
 export default App
-
 

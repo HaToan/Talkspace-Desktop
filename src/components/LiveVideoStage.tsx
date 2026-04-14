@@ -36,6 +36,25 @@ const normalizeUrl = (value?: string) => {
 
 const CONNECTION_TIMEOUT_MS = 12_000
 const normalizeKey = (value?: string) => value?.trim().toLowerCase() || ''
+const splitIdentityTokens = (value?: string) =>
+  (value || '')
+    .split(/[^a-z0-9._@-]+/i)
+    .map((part) => normalizeKey(part))
+    .filter(Boolean)
+
+const getParticipantMetadataRecord = (participant?: Participant | null) => {
+  const metadata = participant?.metadata
+  if (!metadata) return null
+  try {
+    const parsed = JSON.parse(metadata)
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // ignore malformed metadata
+  }
+  return null
+}
 
 const isSameTrackRef = (left: any, right: any) => {
   if (!left || !right) return false
@@ -71,26 +90,21 @@ const getScreenShareFriendlyError = (error: any) => {
 }
 
 const getAvatarFromParticipantMetadata = (participant?: Participant | null) => {
-  const metadata = participant?.metadata
-  if (!metadata) return ''
+  const parsed = getParticipantMetadataRecord(participant)
+  if (!parsed) return ''
 
-  try {
-    const parsed = JSON.parse(metadata) as Record<string, unknown>
-    const candidates = [
-      parsed.avatar,
-      parsed.avatarUrl,
-      parsed.picture,
-      parsed.photo,
-      parsed.image,
-      parsed.imageUrl,
-    ]
-    for (const candidate of candidates) {
-      if (typeof candidate === 'string' && candidate.trim()) {
-        return candidate.trim()
-      }
+  const candidates = [
+    parsed.avatar,
+    parsed.avatarUrl,
+    parsed.picture,
+    parsed.photo,
+    parsed.image,
+    parsed.imageUrl,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim()
     }
-  } catch {
-    // ignore malformed metadata
   }
 
   return ''
@@ -480,11 +494,13 @@ function DesktopConference({
   onMessage,
   resolveParticipantAvatar,
   roomTitle,
+  hostIdentityHints,
 }: {
   audience: boolean
   onMessage: (message: string) => void
   resolveParticipantAvatar: (participant?: Participant | null) => string
   roomTitle: string
+  hostIdentityHints: string[]
 }) {
   const MINI_CAROUSEL_BREAKPOINT = 260
   const MINI_CAROUSEL_GAP = 8
@@ -510,6 +526,107 @@ function DesktopConference({
   const screenShareTracks = tracks
     .filter(isTrackReference)
     .filter((track) => track.publication.source === Track.Source.ScreenShare)
+  const hostIdentitySet = useMemo(() => {
+    const set = new Set<string>()
+    for (const rawHint of hostIdentityHints) {
+      const normalizedHint = normalizeKey(rawHint)
+      if (!normalizedHint) continue
+      set.add(normalizedHint)
+      set.add(normalizedHint.replace(/^@/, ''))
+      for (const token of splitIdentityTokens(normalizedHint)) {
+        set.add(token)
+        set.add(token.replace(/^@/, ''))
+      }
+    }
+    return set
+  }, [hostIdentityHints])
+  const isHostParticipant = useCallback(
+    (participant?: Participant | null) => {
+      if (!participant) return false
+
+      const participantIdentity = normalizeKey(participant.identity)
+      const participantDisplayName = normalizeKey(participant.name)
+      const identityCandidates = [
+        participantIdentity,
+        participantIdentity.replace(/^@/, ''),
+        participantDisplayName,
+        participantDisplayName.replace(/^@/, ''),
+      ].filter(Boolean)
+      if (identityCandidates.some((candidate) => hostIdentitySet.has(candidate))) {
+        return true
+      }
+
+      const identityTokens = [
+        ...splitIdentityTokens(participantIdentity),
+        ...splitIdentityTokens(participantDisplayName),
+      ]
+      if (
+        identityTokens.some(
+          (token) => hostIdentitySet.has(token) || hostIdentitySet.has(token.replace(/^@/, '')),
+        )
+      ) {
+        return true
+      }
+
+      const parsed = getParticipantMetadataRecord(participant)
+      if (!parsed) return false
+
+      const roleKeys = ['role', 'roomRole', 'spaceRole', 'participantRole', 'livekitRole']
+      for (const key of roleKeys) {
+        const value = parsed[key]
+        if (typeof value === 'string' && normalizeKey(value) === 'host') {
+          return true
+        }
+      }
+
+      const idKeys = [
+        'id',
+        'uid',
+        'userId',
+        'userID',
+        'hostId',
+        'username',
+        'userName',
+        'name',
+        'displayName',
+      ]
+      for (const key of idKeys) {
+        const value = parsed[key]
+        if (typeof value !== 'string') continue
+        const normalizedValue = normalizeKey(value)
+        if (!normalizedValue) continue
+        if (
+          hostIdentitySet.has(normalizedValue) ||
+          hostIdentitySet.has(normalizedValue.replace(/^@/, ''))
+        ) {
+          return true
+        }
+        const tokens = splitIdentityTokens(normalizedValue)
+        if (
+          tokens.some(
+            (token) => hostIdentitySet.has(token) || hostIdentitySet.has(token.replace(/^@/, '')),
+          )
+        ) {
+          return true
+        }
+      }
+
+      return false
+    },
+    [hostIdentitySet],
+  )
+  const prioritizedScreenShareTracks = useMemo(() => {
+    return [...screenShareTracks].sort((left, right) => {
+      const leftIsHost = isHostParticipant(left.participant)
+      const rightIsHost = isHostParticipant(right.participant)
+      if (leftIsHost === rightIsHost) return 0
+      return rightIsHost ? 1 : -1
+    })
+  }, [isHostParticipant, screenShareTracks])
+  const preferredSubscribedScreenShareTrack = useMemo(
+    () => prioritizedScreenShareTracks.find((track) => track.publication.isSubscribed) || null,
+    [prioritizedScreenShareTracks],
+  )
   const [autoFocusedTrackSid, setAutoFocusedTrackSid] = useState<string | null>(null)
 
   useEffect(() => {
@@ -523,14 +640,33 @@ function DesktopConference({
   }, [MINI_CAROUSEL_BREAKPOINT])
 
   useEffect(() => {
-    const hasSubscribedScreenShare = screenShareTracks.some((track) => track.publication.isSubscribed)
-
-    if (hasSubscribedScreenShare && !autoFocusedTrackSid && screenShareTracks[0]) {
+    if (
+      preferredSubscribedScreenShareTrack &&
+      !autoFocusedTrackSid &&
+      preferredSubscribedScreenShareTrack.publication.trackSid
+    ) {
       layoutContext.pin.dispatch?.({
         msg: 'set_pin',
-        trackReference: screenShareTracks[0],
+        trackReference: preferredSubscribedScreenShareTrack,
       })
-      setAutoFocusedTrackSid(screenShareTracks[0].publication.trackSid ?? null)
+      setAutoFocusedTrackSid(preferredSubscribedScreenShareTrack.publication.trackSid ?? null)
+      return
+    }
+
+    if (
+      preferredSubscribedScreenShareTrack &&
+      autoFocusedTrackSid &&
+      preferredSubscribedScreenShareTrack.publication.trackSid &&
+      preferredSubscribedScreenShareTrack.publication.trackSid !== autoFocusedTrackSid &&
+      focusTrack &&
+      isTrackReference(focusTrack) &&
+      focusTrack.publication.trackSid === autoFocusedTrackSid
+    ) {
+      layoutContext.pin.dispatch?.({
+        msg: 'set_pin',
+        trackReference: preferredSubscribedScreenShareTrack,
+      })
+      setAutoFocusedTrackSid(preferredSubscribedScreenShareTrack.publication.trackSid ?? null)
       return
     }
 
@@ -563,7 +699,14 @@ function DesktopConference({
         })
       }
     }
-  }, [autoFocusedTrackSid, focusTrack, layoutContext.pin, screenShareTracks, tracks])
+  }, [
+    autoFocusedTrackSid,
+    focusTrack,
+    layoutContext.pin,
+    preferredSubscribedScreenShareTrack,
+    screenShareTracks,
+    tracks,
+  ])
 
   const carouselTracks = tracks.filter((track) => !isSameTrackRef(track, focusTrack))
   const canNavigateMiniCarousel = isMiniWidth && miniCarouselOverflow
@@ -762,6 +905,9 @@ type Props = {
   serverUrl?: string
   roomTitle: string
   roomName: string
+  hostId?: string
+  hostName?: string
+  hostUsername?: string
   localUserName?: string
   localUsername?: string
   localAvatarUrl?: string
@@ -784,6 +930,9 @@ export default function LiveVideoStage(props: Props) {
     serverUrl,
     roomTitle,
     roomName,
+    hostId,
+    hostName,
+    hostUsername,
     audience,
     localUserName,
     localUsername,
@@ -805,6 +954,20 @@ export default function LiveVideoStage(props: Props) {
   const [connectError, setConnectError] = useState('')
   const [actionMessage, setActionMessage] = useState('')
   const [retrySeed, setRetrySeed] = useState(0)
+  const hostIdentityHints = useMemo(() => {
+    const normalizedSet = new Set<string>()
+    for (const value of [hostId, hostUsername, hostName]) {
+      const normalized = normalizeKey(value)
+      if (!normalized) continue
+      normalizedSet.add(normalized)
+      normalizedSet.add(normalized.replace(/^@/, ''))
+      for (const token of splitIdentityTokens(normalized)) {
+        normalizedSet.add(token)
+        normalizedSet.add(token.replace(/^@/, ''))
+      }
+    }
+    return Array.from(normalizedSet)
+  }, [hostId, hostName, hostUsername])
   const avatarMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const [rawKey, rawValue] of Object.entries(participantAvatarMap)) {
@@ -943,6 +1106,11 @@ export default function LiveVideoStage(props: Props) {
           --desktop-vc-header-height: 44px;
           --desktop-vc-control-bar-height: 72px;
           --desktop-vc-control-gap: 0px;
+          --desktop-vc-focus-stage-top-gap: 6px;
+          --desktop-vc-carousel-inline-inset: 10px;
+          --desktop-vc-carousel-top-padding: 4px;
+          --desktop-vc-carousel-bottom-padding: 8px;
+          --desktop-vc-carousel-first-item-top: 4px;
           --vc-bg-0: #05070a;
           --vc-bg-1: #0b0f14;
           --vc-bg-2: #11171d;
@@ -969,9 +1137,16 @@ export default function LiveVideoStage(props: Props) {
           background: var(--vc-meeting-bg);
         }
         .desktop-vc-shell .livekit-stage-rebuilt {
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
+          justify-content: stretch;
           width: 100%;
           height: 100%;
           min-height: 0;
+          padding: 0;
+          gap: 0;
+          margin: 0;
           background: var(--vc-meeting-bg);
           border: 0;
           border-radius: 0;
@@ -1196,6 +1371,11 @@ export default function LiveVideoStage(props: Props) {
             --desktop-vc-header-height: 36px;
             --desktop-vc-control-bar-height: 46px;
             --desktop-vc-control-gap: 0px;
+            --desktop-vc-focus-stage-top-gap: 4px;
+            --desktop-vc-carousel-inline-inset: 8px;
+            --desktop-vc-carousel-top-padding: 4px;
+            --desktop-vc-carousel-bottom-padding: 6px;
+            --desktop-vc-carousel-first-item-top: 4px;
           }
           .desktop-vc-shell .desktop-vc-header {
             height: auto;
@@ -1249,6 +1429,10 @@ export default function LiveVideoStage(props: Props) {
         .desktop-vc-shell .lk-focus-layout-wrapper {
           height: calc(100% - var(--desktop-vc-control-bar-height) - var(--desktop-vc-control-gap)) !important;
         }
+        .desktop-vc-shell .lk-focus-layout-wrapper {
+          box-sizing: border-box;
+          padding-top: var(--desktop-vc-focus-stage-top-gap);
+        }
         .desktop-vc-shell .lk-focus-layout {
           grid-template-columns: minmax(0, 1fr);
           grid-template-rows: minmax(0, 1fr) auto;
@@ -1261,6 +1445,11 @@ export default function LiveVideoStage(props: Props) {
         .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region {
           order: 2;
           position: relative;
+          box-sizing: border-box;
+          width: calc(100% - var(--desktop-vc-carousel-inline-inset) * 2);
+          margin-inline: var(--desktop-vc-carousel-inline-inset);
+          padding-top: var(--desktop-vc-carousel-top-padding);
+          padding-bottom: var(--desktop-vc-carousel-bottom-padding);
           min-height: 0;
         }
         .desktop-vc-shell .desktop-vc-focus-stage,
@@ -1283,8 +1472,8 @@ export default function LiveVideoStage(props: Props) {
             aspect-ratio: 1 / 1;
           }
           .desktop-vc-shell .lk-focus-layout {
-            grid-template-rows: auto auto;
-            align-content: start;
+            grid-template-rows: auto minmax(0, 1fr);
+            align-content: stretch;
             gap: 8px;
           }
           .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage {
@@ -1302,13 +1491,39 @@ export default function LiveVideoStage(props: Props) {
           }
         }
         @media (max-width: 260px) {
-          .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='vertical'] {
-            height: 100%;
-            overflow-y: auto;
-            overflow-x: hidden;
-            scrollbar-width: none;
-            -ms-overflow-style: none;
+          .desktop-vc-shell {
+            --desktop-vc-fixed-focus-stage-size: 230px;
+            --desktop-vc-focus-stage-top-gap: 20px;
           }
+          .desktop-vc-shell .lk-focus-layout {
+            grid-template-rows: var(--desktop-vc-fixed-focus-stage-size) minmax(0, 1fr);
+            align-content: stretch;
+          }
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage {
+            width: min(100%, var(--desktop-vc-fixed-focus-stage-size));
+            height: var(--desktop-vc-fixed-focus-stage-size);
+            min-height: var(--desktop-vc-fixed-focus-stage-size);
+            max-height: var(--desktop-vc-fixed-focus-stage-size);
+            margin-inline: auto;
+          }
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage > .lk-participant-tile {
+            width: 100%;
+            height: 100%;
+          }
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region {
+            height: 100%;
+            min-height: 0;
+            max-height: none;
+          }
+        .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='vertical'] {
+          height: 100%;
+          max-height: none;
+          padding-top: calc(6px + var(--desktop-vc-carousel-first-item-top));
+          overflow-y: auto;
+          overflow-x: hidden;
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
           .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='vertical']::-webkit-scrollbar {
             width: 0;
             height: 0;
@@ -1632,7 +1847,7 @@ export default function LiveVideoStage(props: Props) {
         connect
         audio={!audience && initialMicEnabled}
         video={!audience && initialCameraEnabled}
-        className="stage livekit-stage livekit-stage-rebuilt"
+        className="livekit-stage-rebuilt"
         data-lk-theme="default"
         onError={handleLiveKitError}
         onDisconnected={() => {
@@ -1651,6 +1866,7 @@ export default function LiveVideoStage(props: Props) {
           onMessage={setActionMessage}
           resolveParticipantAvatar={resolveParticipantAvatar}
           roomTitle={roomTitle}
+          hostIdentityHints={hostIdentityHints}
         />
       </LiveKitRoom>
       {!!actionMessage && <div className="error desktop-vc-inline-error">{actionMessage}</div>}
