@@ -72,7 +72,7 @@ const conferenceWindows = new Set()
 let pendingExternalOauth = null
 let bufferedHandoffToken = null
 const conferenceShareModeState = new Map()
-const DEFAULT_CONFERENCE_MIN_SIZE = [360, 520]
+const DEFAULT_CONFERENCE_MIN_SIZE = [250, 250]
 const DEFAULT_SHARE_MODE_HEIGHT = 720
 
 const getShareModeStateKey = (win) => String(win?.id || '')
@@ -1039,6 +1039,56 @@ app.whenReady().then(() => {
       return { success: true }
     }
     return { success: false, error: 'Window not found.' }
+  })
+
+  ipcMain.handle('window:enter-mini-mode', (event, payload) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
+
+    const miniWidth = 250
+    const miniHeight = 250
+
+    const display = screen.getDisplayMatching(senderWindow.getBounds())
+    const workArea = display.workArea
+    const boundedMiniWidth = Math.min(miniWidth, workArea.width - 24)
+    const boundedMiniHeight = Math.min(miniHeight, workArea.height - 24)
+
+    let x = workArea.x + workArea.width - miniWidth - 16
+    let y = workArea.y + 16
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const mainBounds = mainWindow.getBounds()
+      const rightX = mainBounds.x + mainBounds.width + 8
+      if (rightX + boundedMiniWidth <= workArea.x + workArea.width) {
+        x = rightX
+      }
+      y = mainBounds.y
+    }
+
+    x = Math.max(workArea.x + 8, Math.min(x, workArea.x + workArea.width - boundedMiniWidth - 8))
+    y = Math.max(workArea.y + 8, Math.min(y, workArea.y + workArea.height - boundedMiniHeight - 8))
+
+    senderWindow.setResizable(false)
+    senderWindow.setAlwaysOnTop(true, 'floating')
+    senderWindow.setMinimumSize(boundedMiniWidth, boundedMiniHeight)
+    senderWindow.setMaximumSize(boundedMiniWidth, boundedMiniHeight)
+    senderWindow.setBounds({ x, y, width: boundedMiniWidth, height: boundedMiniHeight }, true)
+
+    return { success: true }
+  })
+
+  ipcMain.handle('window:exit-mini-mode', (event) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
+
+    senderWindow.setResizable(true)
+    senderWindow.setAlwaysOnTop(false)
+    senderWindow.setMinimumSize(DEFAULT_CONFERENCE_MIN_SIZE[0], DEFAULT_CONFERENCE_MIN_SIZE[1])
+    senderWindow.setMaximumSize(0, 0)
+    senderWindow.setBounds({ width: 1280, height: 840 }, true)
+    senderWindow.center()
+
+    return { success: true }
   })
 
   ipcMain.handle('window:maximize-current', (event) => {

@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openConferenceWindow: (payload) => ipcRenderer.invoke('conference:open-room', payload),
   closeCurrentWindow: () => ipcRenderer.invoke('window:close-current'),
   minimizeCurrentWindow: () => ipcRenderer.invoke('window:minimize-current'),
+  enterMiniMode: (payload) => ipcRenderer.invoke('window:enter-mini-mode', payload),
+  exitMiniMode: () => ipcRenderer.invoke('window:exit-mini-mode'),
   maximizeCurrentWindow: () => ipcRenderer.invoke('window:maximize-current'),
   toggleFullscreenCurrentWindow: () => ipcRenderer.invoke('window:toggle-fullscreen'),
   isMaximizedCurrentWindow: () => ipcRenderer.invoke('window:is-maximized'),

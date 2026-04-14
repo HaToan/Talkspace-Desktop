@@ -27,7 +27,7 @@ import {
   usePinnedTracks,
   useTracks,
 } from '@livekit/components-react'
-import { ConnectionState, Participant, RoomEvent, Track } from 'livekit-client'
+import { ConnectionState, Participant, Track } from 'livekit-client'
 
 const normalizeUrl = (value?: string) => {
   if (!value) return ''
@@ -386,8 +386,9 @@ function DesktopControlBar({
   )
 }
 
-function DesktopMeetingHeader({ title }: { title: string }) {
+function DesktopMeetingHeader({ title, participantCount }: { title: string; participantCount: number }) {
   const [isMaximized, setIsMaximized] = useState(false)
+  const [isMiniMode, setIsMiniMode] = useState(false)
   const api = (window as any).electronAPI
 
   useEffect(() => {
@@ -396,14 +397,18 @@ function DesktopMeetingHeader({ title }: { title: string }) {
     })
   }, [api])
 
-  const handleMinimize = () => api?.minimizeCurrentWindow?.()
+  const handleMinimize = async () => {
+    await api?.enterMiniMode?.({ participantCount })
+    setIsMiniMode(true)
+  }
   const handleMaximize = async () => {
+    if (isMiniMode) {
+      await api?.exitMiniMode?.()
+      setIsMiniMode(false)
+      return
+    }
     const res = await api?.maximizeCurrentWindow?.()
     if (res) setIsMaximized(res.isMaximized)
-  }
-  const handleFullscreen = async () => {
-    const res = await api?.toggleFullscreenCurrentWindow?.()
-    if (res) setIsMaximized(res.isFullScreen)
   }
   const handleClose = () => api?.closeCurrentWindow?.()
 
@@ -455,16 +460,6 @@ function DesktopMeetingHeader({ title }: { title: string }) {
             )}
           </button>
           <button
-            className="desktop-vc-winbtn desktop-vc-winbtn--fullscreen"
-            onClick={handleFullscreen}
-            title="Full Screen"
-            aria-label="Full Screen"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-              <path d="M0 3V0h3M7 0h3v3M10 7v3H7M3 10H0V7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-            </svg>
-          </button>
-          <button
             className="desktop-vc-winbtn desktop-vc-winbtn--close"
             onClick={handleClose}
             title="Close"
@@ -491,24 +486,41 @@ function DesktopConference({
   resolveParticipantAvatar: (participant?: Participant | null) => string
   roomTitle: string
 }) {
+  const MINI_CAROUSEL_BREAKPOINT = 260
+  const MINI_CAROUSEL_GAP = 8
   const [widgetState, setWidgetState] = useState<WidgetState>({
     showChat: false,
     unreadMessages: 0,
     showSettings: false,
   })
+  const [isMiniWidth, setIsMiniWidth] = useState(() => window.innerWidth <= MINI_CAROUSEL_BREAKPOINT)
+  const [miniCarouselOverflow, setMiniCarouselOverflow] = useState(false)
+  const [miniCarouselCanPrev, setMiniCarouselCanPrev] = useState(false)
+  const [miniCarouselCanNext, setMiniCarouselCanNext] = useState(false)
+  const conferenceRef = useRef<HTMLDivElement | null>(null)
   const layoutContext = useCreateLayoutContext()
   const tracks = useTracks(
     [
       { source: Track.Source.Camera, withPlaceholder: true },
       { source: Track.Source.ScreenShare, withPlaceholder: false },
     ],
-    { updateOnlyOn: [RoomEvent.ActiveSpeakersChanged], onlySubscribed: false },
+    { onlySubscribed: false },
   )
   const focusTrack = usePinnedTracks(layoutContext)?.[0]
   const screenShareTracks = tracks
     .filter(isTrackReference)
     .filter((track) => track.publication.source === Track.Source.ScreenShare)
   const [autoFocusedTrackSid, setAutoFocusedTrackSid] = useState<string | null>(null)
+
+  useEffect(() => {
+    const onResize = () => {
+      setIsMiniWidth(window.innerWidth <= MINI_CAROUSEL_BREAKPOINT)
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+    }
+  }, [MINI_CAROUSEL_BREAKPOINT])
 
   useEffect(() => {
     const hasSubscribedScreenShare = screenShareTracks.some((track) => track.publication.isSubscribed)
@@ -554,11 +566,112 @@ function DesktopConference({
   }, [autoFocusedTrackSid, focusTrack, layoutContext.pin, screenShareTracks, tracks])
 
   const carouselTracks = tracks.filter((track) => !isSameTrackRef(track, focusTrack))
+  const canNavigateMiniCarousel = isMiniWidth && miniCarouselOverflow
+
+  const updateMiniCarouselNavigationState = useCallback(() => {
+    if (!isMiniWidth) {
+      setMiniCarouselOverflow(false)
+      setMiniCarouselCanPrev(false)
+      setMiniCarouselCanNext(false)
+      return
+    }
+
+    const root = conferenceRef.current
+    if (!root) {
+      setMiniCarouselOverflow(false)
+      setMiniCarouselCanPrev(false)
+      setMiniCarouselCanNext(false)
+      return
+    }
+
+    const carousel = root.querySelector<HTMLElement>(
+      ".lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='vertical']",
+    )
+    if (!carousel) {
+      setMiniCarouselOverflow(false)
+      setMiniCarouselCanPrev(false)
+      setMiniCarouselCanNext(false)
+      return
+    }
+
+    const epsilon = 1
+    const overflow = carousel.scrollHeight - carousel.clientHeight > epsilon
+    const canPrev = overflow && carousel.scrollTop > epsilon
+    const canNext = overflow && carousel.scrollTop + carousel.clientHeight < carousel.scrollHeight - epsilon
+
+    setMiniCarouselOverflow(overflow)
+    setMiniCarouselCanPrev(canPrev)
+    setMiniCarouselCanNext(canNext)
+  }, [isMiniWidth])
+
+  useEffect(() => {
+    if (!isMiniWidth) {
+      setMiniCarouselOverflow(false)
+      setMiniCarouselCanPrev(false)
+      setMiniCarouselCanNext(false)
+      return
+    }
+
+    const root = conferenceRef.current
+    if (!root) return
+
+    const carousel = root.querySelector<HTMLElement>(
+      ".lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='vertical']",
+    )
+    if (!carousel) {
+      updateMiniCarouselNavigationState()
+      return
+    }
+
+    const onScroll = () => updateMiniCarouselNavigationState()
+    const onResize = () => updateMiniCarouselNavigationState()
+
+    carousel.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onResize)
+
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => updateMiniCarouselNavigationState())
+        : null
+    resizeObserver?.observe(carousel)
+
+    const mutationObserver = new MutationObserver(() => updateMiniCarouselNavigationState())
+    mutationObserver.observe(carousel, { childList: true })
+
+    updateMiniCarouselNavigationState()
+
+    return () => {
+      carousel.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onResize)
+      resizeObserver?.disconnect()
+      mutationObserver.disconnect()
+    }
+  }, [carouselTracks.length, focusTrack, isMiniWidth, updateMiniCarouselNavigationState])
+
+  const scrollMiniCarousel = useCallback((direction: 'prev' | 'next') => {
+    if (!canNavigateMiniCarousel) return
+    const root = conferenceRef.current
+    if (!root) return
+    const carousel = root.querySelector<HTMLElement>(
+      ".lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='vertical']",
+    )
+    if (!carousel) return
+
+    const firstTile = carousel.querySelector<HTMLElement>('.lk-participant-tile')
+    const tileHeight = firstTile?.getBoundingClientRect().height || carousel.clientHeight
+    const computedStyle = window.getComputedStyle(carousel)
+    const rowGap = Number.parseFloat(computedStyle.rowGap || computedStyle.gap || '0') || MINI_CAROUSEL_GAP
+    const scrollStep = Math.max(40, tileHeight + rowGap)
+    carousel.scrollBy({
+      top: direction === 'next' ? scrollStep : -scrollStep,
+      behavior: 'smooth',
+    })
+  }, [canNavigateMiniCarousel])
 
   return (
     <LayoutContextProvider value={layoutContext} onWidgetChange={setWidgetState}>
-      <div className="lk-video-conference desktop-vc-conference">
-        <DesktopMeetingHeader title={roomTitle} />
+      <div className="lk-video-conference desktop-vc-conference" ref={conferenceRef}>
+        <DesktopMeetingHeader title={roomTitle} participantCount={tracks.length} />
         <div className="lk-video-conference-inner">
           {!focusTrack ? (
             <div className="lk-grid-layout-wrapper">
@@ -569,9 +682,49 @@ function DesktopConference({
           ) : (
             <div className="lk-focus-layout-wrapper">
               <FocusLayoutContainer>
-                <CarouselLayout tracks={carouselTracks} orientation="horizontal">
-                  <AvatarParticipantTile resolveParticipantAvatar={resolveParticipantAvatar} />
-                </CarouselLayout>
+                <div className="desktop-vc-carousel-region">
+                  <CarouselLayout tracks={carouselTracks} orientation={isMiniWidth ? 'vertical' : 'horizontal'}>
+                    <AvatarParticipantTile resolveParticipantAvatar={resolveParticipantAvatar} />
+                  </CarouselLayout>
+                  {canNavigateMiniCarousel ? (
+                    <div className="desktop-vc-mini-carousel-nav">
+                      <button
+                        className="desktop-vc-mini-carousel-nav__btn"
+                        disabled={!miniCarouselCanPrev}
+                        onClick={() => scrollMiniCarousel('prev')}
+                        type="button"
+                      >
+                        <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14">
+                          <path
+                            d="M9.8 3.6 5.4 8l4.4 4.4"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        className="desktop-vc-mini-carousel-nav__btn"
+                        disabled={!miniCarouselCanNext}
+                        onClick={() => scrollMiniCarousel('next')}
+                        type="button"
+                      >
+                        <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14">
+                          <path
+                            d="m6.2 3.6 4.4 4.4-4.4 4.4"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <div className="desktop-vc-focus-stage">
                   <AvatarParticipantTile
                     trackRef={focusTrack}
@@ -787,6 +940,9 @@ export default function LiveVideoStage(props: Props) {
         .desktop-vc-shell {
           --vc-meeting-bg: #756797;
           --vc-header-bg: #25272b;
+          --desktop-vc-header-height: 44px;
+          --desktop-vc-control-bar-height: 72px;
+          --desktop-vc-control-gap: 0px;
           --vc-bg-0: #05070a;
           --vc-bg-1: #0b0f14;
           --vc-bg-2: #11171d;
@@ -802,6 +958,7 @@ export default function LiveVideoStage(props: Props) {
           --vc-accent-warm: #d2a068;
           --vc-danger: #ee6b5f;
           --vc-danger-strong: #d45449;
+          --lk-control-bar-height: var(--desktop-vc-control-bar-height);
           display: flex;
           flex-direction: column;
           width: 100%;
@@ -835,7 +992,7 @@ export default function LiveVideoStage(props: Props) {
           box-sizing: border-box;
           flex: 1;
           min-height: 0;
-          padding: 14px 14px 84px;
+          padding: var(--desktop-vc-header-height) 14px var(--desktop-vc-control-gap);
         }
         .desktop-vc-shell .desktop-vc-conference {
           position: relative;
@@ -846,36 +1003,44 @@ export default function LiveVideoStage(props: Props) {
           background: var(--vc-meeting-bg);
         }
         .desktop-vc-shell .desktop-vc-header {
-          position: relative;
-          z-index: 30;
-          grid-row: 1;
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          z-index: 9999;
           display: flex;
           align-items: center;
+          height: var(--desktop-vc-header-height);
           min-width: 0;
-          gap: 22px;
-          padding: 0 24px;
+          overflow: hidden;
+          gap: 6px;
+          padding: 0 6px 0 10px;
           color: #f4f6f8;
           background: var(--vc-header-bg);
           border-bottom: 1px solid rgba(255, 255, 255, 0.08);
           box-shadow: 0 1px 0 rgba(0, 0, 0, 0.36);
           user-select: none;
         }
+        /* Brand: co lại khi hẹp, ẩn text khi không đủ chỗ */
         .desktop-vc-shell .desktop-vc-header__brand {
           display: inline-flex;
           align-items: center;
-          gap: 10px;
-          min-width: 142px;
+          gap: 7px;
+          flex: 0 1 auto;
+          min-width: 0;
+          overflow: hidden;
           color: #f9fafb;
         }
         .desktop-vc-shell .desktop-vc-header__mark {
           display: inline-grid;
           place-items: center;
-          width: 30px;
-          height: 30px;
-          border-radius: 10px;
+          width: 26px;
+          height: 26px;
+          flex-shrink: 0;
+          border-radius: 8px;
           color: #e9fcf8;
           background: linear-gradient(135deg, rgba(99, 210, 198, 0.9), rgba(86, 183, 255, 0.72));
-          font-size: 11px;
+          font-size: 10px;
           font-weight: 800;
           letter-spacing: 0.04em;
         }
@@ -883,57 +1048,189 @@ export default function LiveVideoStage(props: Props) {
           display: grid;
           gap: 1px;
           line-height: 1;
+          overflow: hidden;
+          min-width: 0;
         }
         .desktop-vc-shell .desktop-vc-header__brand-text strong,
         .desktop-vc-shell .desktop-vc-header__brand-text span {
-          font-size: 15px;
-          letter-spacing: -0.02em;
-        }
-        .desktop-vc-shell .desktop-vc-header__title {
-          display: inline-flex;
-          align-items: center;
-          gap: 10px;
-          min-width: 0;
-          flex: 1;
-          color: #f5f6f7;
-          font-size: 14px;
-          font-weight: 600;
+          font-size: 12px;
+          letter-spacing: -0.01em;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
+        /* Title: chiếm hết khoảng trống còn lại, truncate */
+        .desktop-vc-shell .desktop-vc-header__title {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-width: 0;
+          flex: 1 1 0;
+          overflow: hidden;
+          color: #f5f6f7;
+          font-size: 13px;
+          font-weight: 600;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+        }
+        .desktop-vc-shell .desktop-vc-header__title-text {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          min-width: 0;
+        }
         .desktop-vc-shell .desktop-vc-header__info {
           display: inline-grid;
           place-items: center;
-          width: 18px;
-          height: 18px;
+          width: 15px;
+          height: 15px;
           flex: 0 0 auto;
-          border: 1px solid rgba(255, 255, 255, 0.58);
+          border: 1px solid rgba(255, 255, 255, 0.45);
           border-radius: 999px;
-          color: rgba(255, 255, 255, 0.88);
-          font-size: 12px;
+          color: rgba(255, 255, 255, 0.75);
+          font-size: 10px;
           font-weight: 700;
           font-family: Georgia, serif;
         }
-        .desktop-vc-shell .desktop-vc-header__actions {
-          display: inline-flex;
+        /* Tools (Secure/HD/Layout): ẩn khi không đủ chỗ */
+        .desktop-vc-shell .desktop-vc-header__right {
+          display: flex;
           align-items: center;
-          justify-content: flex-end;
-          gap: 12px;
-          flex: 0 0 auto;
-          color: rgba(255, 255, 255, 0.82);
-          font-size: 12px;
-          font-weight: 700;
+          gap: 4px;
+          flex: 0 1 auto;
+          min-width: 0;
+          overflow: hidden;
+        }
+        .desktop-vc-shell .desktop-vc-header__tools {
+          display: flex;
+          align-items: center;
+          gap: 3px;
+          flex: 0 1 auto;
+          min-width: 0;
+          overflow: hidden;
         }
         .desktop-vc-shell .desktop-vc-header__secure {
           color: #65f0b8;
+          font-size: 11px;
+          font-weight: 600;
+          white-space: nowrap;
+          flex-shrink: 1;
+          min-width: 0;
+          overflow: hidden;
         }
         .desktop-vc-shell .desktop-vc-header__chip,
         .desktop-vc-shell .desktop-vc-header__menu {
-          padding: 5px 9px;
+          padding: 3px 7px;
           border: 1px solid rgba(255, 255, 255, 0.12);
           border-radius: 999px;
           background: rgba(255, 255, 255, 0.06);
+          font-size: 11px;
+          white-space: nowrap;
+          flex-shrink: 1;
+          min-width: 0;
+          overflow: hidden;
+        }
+        /* Window controls: không bao giờ bị ẩn */
+        .desktop-vc-shell .desktop-vc-header__winctrl {
+          display: flex;
+          align-items: center;
+          flex: 0 0 auto;
+          gap: 1px;
+        }
+        .desktop-vc-shell .desktop-vc-winbtn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 28px;
+          height: 44px;
+          border: none;
+          background: transparent;
+          color: rgba(255,255,255,0.5);
+          cursor: pointer;
+          -webkit-app-region: no-drag;
+          border-radius: 4px;
+          flex-shrink: 0;
+          transition: background 0.15s, color 0.15s;
+        }
+        .desktop-vc-shell .desktop-vc-winbtn:hover {
+          background: rgba(255,255,255,0.1);
+          color: #fff;
+        }
+        .desktop-vc-shell .desktop-vc-winbtn--close:hover {
+          background: rgba(196, 43, 28, 0.85);
+          color: #fff;
+        }
+        .desktop-vc-shell .lk-pagination-control {
+          height: 30px !important;
+          width: 56px !important;
+          bottom: 0.5rem !important;
+          overflow: visible !important;
+          display: flex !important;
+          gap: 2px !important;
+          padding: 2px !important;
+        }
+        .desktop-vc-shell .lk-pagination-count {
+          display: none !important;
+        }
+        .desktop-vc-shell .lk-pagination-control > .lk-button {
+          flex: 1 !important;
+          width: 26px !important;
+          height: 26px !important;
+          min-width: 0 !important;
+          padding: 0 !important;
+          border-radius: 4px !important;
+          display: flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+        }
+        .desktop-vc-shell .lk-pagination-control > .lk-button > svg {
+          width: 14px !important;
+          height: 14px !important;
+          flex-shrink: 0 !important;
+        }
+        @media (max-width: 400px) {
+          .desktop-vc-shell .desktop-vc-header__tools {
+            display: none;
+          }
+          .desktop-vc-shell {
+            --desktop-vc-header-height: 36px;
+            --desktop-vc-control-bar-height: 46px;
+            --desktop-vc-control-gap: 0px;
+          }
+          .desktop-vc-shell .desktop-vc-header {
+            height: auto;
+            min-height: 36px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+          }
+          .desktop-vc-shell .desktop-vc-winbtn {
+            height: 36px;
+          }
+          /* Override LiveKit variable để grid không chừa 69px */
+          .desktop-vc-shell [data-lk-theme] {
+            --lk-control-bar-height: 46px;
+          }
+          /* Control bar nhỏ hơn ở mini mode */
+          .desktop-vc-shell .lk-control-bar {
+            padding: 6px 8px 8px;
+            gap: 4px;
+            max-height: 46px !important;
+            min-height: 46px;
+          }
+          .desktop-vc-shell .lk-control-bar .lk-button,
+          .desktop-vc-shell .lk-control-bar .lk-disconnect-button,
+          .desktop-vc-shell .lk-control-bar .lk-chat-toggle,
+          .desktop-vc-shell .lk-control-bar .lk-settings-toggle {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+          }
+          .desktop-vc-shell .lk-video-conference-inner {
+            padding-top: var(--desktop-vc-header-height);
+            padding-bottom: var(--desktop-vc-control-gap);
+            padding-left: 4px;
+            padding-right: 4px;
+          }
         }
         .desktop-vc-shell .lk-grid-layout,
         .desktop-vc-shell .lk-focus-layout {
@@ -948,15 +1245,113 @@ export default function LiveVideoStage(props: Props) {
           z-index: 1;
           background: transparent;
         }
+        .desktop-vc-shell .lk-grid-layout-wrapper,
+        .desktop-vc-shell .lk-focus-layout-wrapper {
+          height: calc(100% - var(--desktop-vc-control-bar-height) - var(--desktop-vc-control-gap)) !important;
+        }
         .desktop-vc-shell .lk-focus-layout {
           grid-template-columns: minmax(0, 1fr);
-          grid-template-rows: auto minmax(0, 1fr);
+          grid-template-rows: minmax(0, 1fr) auto;
+          align-items: stretch;
+        }
+        .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage {
+          order: 1;
+          min-height: 0;
+        }
+        .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region {
+          order: 2;
+          position: relative;
+          min-height: 0;
         }
         .desktop-vc-shell .desktop-vc-focus-stage,
         .desktop-vc-shell .desktop-vc-focus-stage > .lk-participant-tile {
           width: 100%;
           height: 100%;
           min-height: 0;
+        }
+        @media (max-width: 400px) {
+          .desktop-vc-shell .lk-grid-layout {
+            height: auto;
+            max-height: 100%;
+            align-content: start;
+            grid-auto-rows: auto;
+            gap: 8px;
+            overflow-y: auto;
+          }
+          .desktop-vc-shell .lk-grid-layout > .lk-participant-tile {
+            height: auto;
+            aspect-ratio: 1 / 1;
+          }
+          .desktop-vc-shell .lk-focus-layout {
+            grid-template-rows: auto auto;
+            align-content: start;
+            gap: 8px;
+          }
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage {
+            height: auto;
+            aspect-ratio: 1 / 1;
+          }
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage > .lk-participant-tile {
+            height: 100%;
+          }
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region,
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel {
+            height: 100%;
+            min-height: 0;
+            max-height: none;
+          }
+        }
+        @media (max-width: 260px) {
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='vertical'] {
+            height: 100%;
+            overflow-y: auto;
+            overflow-x: hidden;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+          }
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='vertical']::-webkit-scrollbar {
+            width: 0;
+            height: 0;
+            display: none;
+          }
+          .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='vertical'] > * {
+            width: 100%;
+            min-width: 0;
+            height: auto;
+            aspect-ratio: 1 / 1;
+          }
+          .desktop-vc-shell .desktop-vc-mini-carousel-nav {
+            position: absolute;
+            right: 8px;
+            bottom: 8px;
+            z-index: 4;
+            display: inline-flex;
+            gap: 6px;
+          }
+          .desktop-vc-shell .desktop-vc-mini-carousel-nav__btn {
+            width: 26px;
+            height: 26px;
+            border-radius: 8px;
+            border: 1px solid rgba(118, 144, 160, 0.28);
+            background: rgba(8, 12, 16, 0.72);
+            color: #e5eef8;
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1;
+            cursor: pointer;
+          }
+          .desktop-vc-shell .desktop-vc-mini-carousel-nav__btn:hover {
+            border-color: rgba(126, 205, 196, 0.42);
+            background: rgba(14, 19, 26, 0.9);
+          }
+          .desktop-vc-shell .desktop-vc-mini-carousel-nav__btn:disabled {
+            opacity: 0.35;
+            cursor: default;
+          }
+          .desktop-vc-shell .desktop-vc-mini-carousel-nav__btn:disabled:hover {
+            border-color: rgba(118, 144, 160, 0.28);
+            background: rgba(8, 12, 16, 0.72);
+          }
         }
         .desktop-vc-shell .lk-grid-layout > *,
         .desktop-vc-shell .lk-focus-layout > * {
@@ -1046,6 +1441,9 @@ export default function LiveVideoStage(props: Props) {
           gap: 10px;
           align-items: center;
           padding: 12px 18px 14px;
+          box-sizing: border-box;
+          min-height: var(--desktop-vc-control-bar-height);
+          max-height: none;
           border-top: 1px solid rgba(118, 144, 160, 0.14);
           border-left: 0;
           border-right: 0;
@@ -1114,7 +1512,7 @@ export default function LiveVideoStage(props: Props) {
           position: absolute;
           top: 76px;
           right: 12px;
-          bottom: 86px;
+          bottom: calc(var(--desktop-vc-control-bar-height) + var(--desktop-vc-control-gap));
           width: min(360px, 34vw);
           min-width: 300px;
           margin: 0;
@@ -1209,7 +1607,7 @@ export default function LiveVideoStage(props: Props) {
           position: fixed;
           left: 16px;
           right: 16px;
-          bottom: 86px;
+          bottom: calc(var(--desktop-vc-control-bar-height) + var(--desktop-vc-control-gap));
           z-index: 101;
           margin: 0;
           color: #fff5ef;
