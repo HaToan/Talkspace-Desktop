@@ -21,6 +21,7 @@ import {
   isTrackReference,
   useConnectionState,
   useCreateLayoutContext,
+  useDataChannel,
   useLocalParticipant,
   useMaybeLayoutContext,
   useMaybeTrackRefContext,
@@ -28,6 +29,67 @@ import {
   useTracks,
 } from '@livekit/components-react'
 import { ConnectionState, Participant, Track } from 'livekit-client'
+
+// ─── Action drop — compatible with talkspaces.action.v1 ──────────────────────
+const ACTION_DROP_TOPIC = 'talkspaces.action.v1'
+const ACTION_THROTTLE_MS = 700
+
+type RoomActionKind = 'flower' | 'icon' | 'team_badge'
+
+interface RoomActionEventV1 {
+  version: 'v1'
+  id: string
+  roomId?: string
+  actor: { id: string; name?: string; avatar?: string }
+  kind: RoomActionKind
+  code: string
+  sentAt: number
+  display?: { lane?: number; durationMs?: number; scale?: number }
+}
+
+const isRoomActionEventV1 = (value: unknown): value is RoomActionEventV1 => {
+  if (!value || typeof value !== 'object') return false
+  const v = value as Record<string, unknown>
+  return (
+    v.version === 'v1' &&
+    typeof v.id === 'string' &&
+    typeof v.kind === 'string' &&
+    typeof v.code === 'string'
+  )
+}
+
+// Action presets — must stay in sync with the web's ACTION_PRESETS list
+const ACTION_PRESETS = [
+  { kind: 'flower'     as RoomActionKind, code: 'heart_sparkle', label: 'Heart',    glyph: '💖' },
+  { kind: 'icon'       as RoomActionKind, code: 'thumbs_up',     label: 'Like',     glyph: '👍' },
+  { kind: 'icon'       as RoomActionKind, code: 'party',         label: 'Celebrate',glyph: '🎉' },
+  { kind: 'icon'       as RoomActionKind, code: 'clap',          label: 'Clap',     glyph: '👏' },
+  { kind: 'icon'       as RoomActionKind, code: 'joy',           label: 'Laugh',    glyph: '😂' },
+  { kind: 'icon'       as RoomActionKind, code: 'wow',           label: 'Wow',      glyph: '😮' },
+  { kind: 'icon'       as RoomActionKind, code: 'sad',           label: 'Sad',      glyph: '😢' },
+  { kind: 'icon'       as RoomActionKind, code: 'thinking',      label: 'Think',    glyph: '🤔' },
+  { kind: 'team_badge' as RoomActionKind, code: 'thumbs_down',   label: 'Dislike',  glyph: '👎' },
+] as const
+
+// code → display glyph (covers all known codes)
+const ACTION_GLYPH_BY_CODE: Record<string, string> = Object.fromEntries(
+  ACTION_PRESETS.map((p) => [p.code, p.glyph]),
+)
+
+// Legacy lk-reactions backward compat
+type LegacyReactionPayload = { id: string; emoji: string; senderName: string }
+const LEGACY_GLYPH_TO_CODE: Record<string, string> = {
+  '👍': 'thumbs_up', '❤️': 'heart_sparkle', '😂': 'joy',
+  '😮': 'wow', '👏': 'clap', '🎉': 'party',
+}
+
+type ActiveReaction = {
+  id: string
+  emoji: string
+  lane: number        // 0–4, maps to left: (14 + lane * 16)%
+  actorName: string
+  durationMs: number
+}
 
 const normalizeUrl = (value?: string) => {
   if (!value) return ''
@@ -132,6 +194,156 @@ function AvatarParticipantTile({
       className={avatarUrl ? 'lk-avatar-participant-tile' : undefined}
       style={style}
     />
+  )
+}
+
+function useReactions() {
+  const [reactions, setReactions] = useState<ActiveReaction[]>([])
+  const { localParticipant } = useLocalParticipant()
+  const actionSeenRef = useRef(new Set<string>())
+  const lastSentAtRef = useRef(0)
+
+  const addAction = useCallback((event: RoomActionEventV1) => {
+    if (actionSeenRef.current.has(event.id)) return
+    actionSeenRef.current.add(event.id)
+
+    const emoji = ACTION_GLYPH_BY_CODE[event.code] ?? (event.kind === 'flower' ? '💖' : '👍')
+    const actorName = event.actor.name || event.actor.id || ''
+    const lane = event.display?.lane ?? Math.floor(Math.random() * 5)
+    const durationMs = Math.max(1400, Math.min(3200, event.display?.durationMs ?? 2600))
+
+    setReactions((prev) => [...prev, { id: event.id, emoji, lane, actorName, durationMs }])
+    setTimeout(() => {
+      setReactions((prev) => prev.filter((r) => r.id !== event.id))
+    }, durationMs + 200)
+    setTimeout(() => {
+      actionSeenRef.current.delete(event.id)
+    }, 60_000)
+  }, [])
+
+  // Primary channel: talkspaces.action.v1 (web/mobile compatible)
+  const { send: sendV1, message: latestV1 } = useDataChannel(ACTION_DROP_TOPIC)
+
+  useEffect(() => {
+    if (!latestV1?.payload) return
+    try {
+      const parsed = JSON.parse(new TextDecoder().decode(latestV1.payload))
+      if (isRoomActionEventV1(parsed)) addAction(parsed)
+    } catch {
+      // ignore malformed messages
+    }
+  }, [latestV1?.payload, addAction])
+
+  // Backward compat: lk-reactions (legacy desktop format)
+  const handleLegacy = useCallback(
+    (msg: { payload: Uint8Array }) => {
+      try {
+        const data = JSON.parse(new TextDecoder().decode(msg.payload)) as LegacyReactionPayload
+        if (!data?.id || !data?.emoji) return
+        const code = LEGACY_GLYPH_TO_CODE[data.emoji] ?? 'thumbs_up'
+        addAction({
+          version: 'v1',
+          id: data.id,
+          actor: { id: '', name: data.senderName },
+          kind: 'icon',
+          code,
+          sentAt: Date.now(),
+        })
+      } catch {
+        // ignore malformed messages
+      }
+    },
+    [addAction],
+  )
+  useDataChannel('lk-reactions', handleLegacy)
+
+  const sendReaction = useCallback(
+    (code: string) => {
+      const now = Date.now()
+      if (now - lastSentAtRef.current < ACTION_THROTTLE_MS) return
+      lastSentAtRef.current = now
+
+      const preset = ACTION_PRESETS.find((p) => p.code === code)
+      if (!preset) return
+
+      const id = `${now}-${Math.random().toString(36).slice(2, 7)}`
+      const actorId = localParticipant?.identity || 'unknown'
+      const actorName = localParticipant?.name || actorId
+
+      const event: RoomActionEventV1 = {
+        version: 'v1',
+        id,
+        actor: { id: actorId, name: actorName },
+        kind: preset.kind,
+        code: preset.code,
+        sentAt: now,
+        display: { durationMs: 2600 },
+      }
+
+      try {
+        sendV1(new TextEncoder().encode(JSON.stringify(event)), { reliable: false })
+      } catch {
+        // data channel not ready — show locally anyway
+      }
+      addAction(event)
+    },
+    [localParticipant, sendV1, addAction],
+  )
+
+  return { reactions, sendReaction }
+}
+
+function ReactionOverlay({ reactions }: { reactions: ActiveReaction[] }) {
+  if (reactions.length === 0) return null
+  return (
+    <div className="desktop-vc-reaction-overlay" aria-hidden="true">
+      {reactions.map((r) => (
+        <div
+          key={r.id}
+          className="desktop-vc-reaction-particle"
+          style={{ left: `${14 + r.lane * 16}%`, animationDuration: `${r.durationMs}ms` }}
+        >
+          <span className="desktop-vc-reaction-glyph">{r.emoji}</span>
+          {r.actorName ? <span className="desktop-vc-reaction-actor">{r.actorName}</span> : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ReactionsBar({
+  onReact,
+  onClose,
+}: {
+  onReact: (code: string) => void
+  onClose: () => void
+}) {
+  const barRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (barRef.current && !barRef.current.contains(e.target as Node)) {
+        onClose()
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [onClose])
+
+  return (
+    <div className="desktop-vc-reactions-bar" ref={barRef} role="toolbar" aria-label="Pick a reaction">
+      {ACTION_PRESETS.map((preset) => (
+        <button
+          key={preset.code}
+          className="desktop-vc-reactions-bar__btn"
+          onClick={() => { onReact(preset.code); onClose() }}
+          type="button"
+          title={preset.label}
+        >
+          {preset.glyph}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -359,14 +571,18 @@ function ElectronScreenShareButton({
 function DesktopControlBar({
   audience,
   onMessage,
+  onReact,
 }: {
   audience: boolean
   onMessage: (message: string) => void
+  onReact: (code: string) => void
 }) {
   const { localParticipant } = useLocalParticipant()
   const layoutContext = useMaybeLayoutContext()
   const canPublish = !audience && Boolean(localParticipant?.permissions?.canPublish)
   const settingsOpen = Boolean(layoutContext?.widget.state?.showSettings)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const reactionsBtnRef = useRef<HTMLButtonElement>(null)
 
   return (
     <div className="lk-control-bar">
@@ -384,6 +600,25 @@ function DesktopControlBar({
       <ChatToggle title="Chat">
         <span className="desktop-vc-control-icon">Chat</span>
       </ChatToggle>
+      <div className="desktop-vc-reactions-wrap">
+        {pickerOpen && (
+          <ReactionsBar
+            onReact={onReact}
+            onClose={() => setPickerOpen(false)}
+          />
+        )}
+        <button
+          ref={reactionsBtnRef}
+          className="lk-button desktop-vc-reactions-btn"
+          aria-pressed={pickerOpen}
+          aria-label="Reactions"
+          title="Reactions"
+          type="button"
+          onClick={() => setPickerOpen((v) => !v)}
+        >
+          <span className="desktop-vc-reactions-btn__icon" aria-hidden="true">🎭</span>
+        </button>
+      </div>
       <button
         className="lk-button lk-settings-toggle"
         aria-pressed={settingsOpen}
@@ -515,6 +750,7 @@ function DesktopConference({
   const [miniCarouselCanNext, setMiniCarouselCanNext] = useState(false)
   const conferenceRef = useRef<HTMLDivElement | null>(null)
   const layoutContext = useCreateLayoutContext()
+  const { reactions, sendReaction } = useReactions()
   const tracks = useTracks(
     [
       { source: Track.Source.Camera, withPlaceholder: true },
@@ -898,8 +1134,9 @@ function DesktopConference({
               </FocusLayoutContainer>
             </div>
           )}
-          <DesktopControlBar audience={audience} onMessage={onMessage} />
+          <DesktopControlBar audience={audience} onMessage={onMessage} onReact={sendReaction} />
         </div>
+        <ReactionOverlay reactions={reactions} />
         <div className={chatDrawerClassName} aria-hidden={!widgetState.showChat}>
           <Chat />
         </div>
@@ -1913,6 +2150,119 @@ export default function LiveVideoStage(props: Props) {
           .desktop-vc-shell .desktop-vc-drawer {
             width: min(360px, 96vw);
             min-width: min(260px, 96vw);
+          }
+        }
+        /* ── Reaction overlay ─────────────────────────────────────────── */
+        .desktop-vc-reaction-overlay {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          z-index: 150;
+          overflow: hidden;
+        }
+        .desktop-vc-reaction-particle {
+          position: absolute;
+          bottom: 0;
+          display: inline-flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 4px;
+          opacity: 0;
+          transform: translate(-50%, 0) scale(0.9);
+          animation-name: vc-action-float-up;
+          animation-timing-function: ease-out;
+          animation-fill-mode: forwards;
+          user-select: none;
+        }
+        .desktop-vc-reaction-glyph {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 40px;
+          height: 40px;
+          font-size: 20px;
+          border-radius: 999px;
+          background: rgba(8, 15, 30, 0.86);
+          border: 1px solid rgba(56, 189, 248, 0.4);
+          box-shadow: 0 10px 24px rgba(2, 6, 23, 0.45);
+        }
+        .desktop-vc-reaction-actor {
+          background: rgba(8, 15, 30, 0.75);
+          border: 1px solid rgba(30, 58, 95, 0.9);
+          border-radius: 999px;
+          color: #cbd5e1;
+          font-size: 10px;
+          font-weight: 600;
+          letter-spacing: 0.04em;
+          max-width: 90px;
+          overflow: hidden;
+          padding: 2px 7px;
+          text-overflow: ellipsis;
+          text-transform: uppercase;
+          white-space: nowrap;
+        }
+        @keyframes vc-action-float-up {
+          0%   { opacity: 0; transform: translate(-50%, 12px) scale(0.82); }
+          12%  { opacity: 1; transform: translate(-50%, -8px) scale(1);    }
+          80%  { opacity: 1; transform: translate(-50%, -44vh) scale(1.03); }
+          100% { opacity: 0; transform: translate(-50%, -58vh) scale(0.94); }
+        }
+        /* ── Reactions picker ─────────────────────────────────────────── */
+        .desktop-vc-reactions-wrap {
+          position: relative;
+        }
+        .desktop-vc-reactions-bar {
+          position: absolute;
+          bottom: calc(100% + 10px);
+          left: 50%;
+          transform: translateX(-50%);
+          display: flex;
+          flex-wrap: wrap;
+          gap: 3px;
+          padding: 6px 8px;
+          border-radius: 18px;
+          border: 1px solid rgba(118, 144, 160, 0.22);
+          background: rgba(10, 14, 19, 0.97);
+          backdrop-filter: blur(20px);
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+          z-index: 200;
+          max-width: calc(100vw - 16px);
+          white-space: nowrap;
+        }
+        .desktop-vc-reactions-bar__btn {
+          width: 32px;
+          height: 32px;
+          border: none;
+          background: transparent;
+          border-radius: 8px;
+          font-size: 18px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: background 0.1s, transform 0.1s;
+        }
+        .desktop-vc-reactions-bar__btn:hover {
+          background: rgba(255, 255, 255, 0.1);
+          transform: scale(1.25);
+        }
+        .desktop-vc-reactions-bar__btn:active {
+          transform: scale(0.92);
+        }
+        .desktop-vc-reactions-btn__icon {
+          font-size: 18px;
+          line-height: 1;
+        }
+        @media (max-width: 400px) {
+          .desktop-vc-reaction-glyph {
+            width: 32px;
+            height: 32px;
+            font-size: 16px;
+          }
+          .desktop-vc-reactions-bar__btn {
+            width: 28px;
+            height: 28px;
+            font-size: 16px;
           }
         }
       `}</style>
