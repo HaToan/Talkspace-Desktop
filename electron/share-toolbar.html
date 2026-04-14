@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Share Controls</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: transparent;
+        font-family: 'Segoe UI', Tahoma, sans-serif;
+        user-select: none;
+      }
+      .bar {
+        width: 100%;
+        height: 58px;
+        border-radius: 12px;
+        border: 1px solid rgba(74, 222, 128, 0.62);
+        background: rgba(8, 12, 24, 0.96);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 12px;
+        box-shadow:
+          0 10px 24px rgba(0, 0, 0, 0.36),
+          0 0 0 1px rgba(34, 197, 94, 0.24);
+        -webkit-app-region: drag;
+      }
+      .title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #dcfce7;
+        letter-spacing: 0.01em;
+      }
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        -webkit-app-region: no-drag;
+      }
+      button {
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        border-radius: 8px;
+        background: rgba(15, 23, 42, 0.92);
+        color: #e2e8f0;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
+        padding: 8px 10px;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: rgba(148, 163, 184, 0.72);
+      }
+      .stop {
+        border-color: rgba(252, 165, 165, 0.68);
+        background: rgba(153, 27, 27, 0.95);
+        color: #fff5f5;
+      }
+      .stop:hover {
+        border-color: rgba(254, 202, 202, 0.92);
+        background: rgba(185, 28, 28, 0.95);
+      }
+      .primary {
+        border-color: rgba(74, 222, 128, 0.68);
+        background: rgba(21, 128, 61, 0.95);
+        color: #ecfdf5;
+      }
+      .primary:hover {
+        border-color: rgba(134, 239, 172, 0.92);
+        background: rgba(22, 163, 74, 0.95);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bar">
+      <div class="title">You are screen sharing</div>
+      <div class="actions">
+        <button id="mic" type="button">Mic</button>
+        <button id="camera" type="button">Camera</button>
+        <button id="chat" type="button">Chat</button>
+        <button id="meeting" type="button">Meeting</button>
+        <button id="stop" class="primary" type="button">Stop Share</button>
+        <button id="leave" class="stop" type="button">Leave</button>
+      </div>
+    </div>
+    <script>
+      const api = window.shareToolbarAPI
+      document.getElementById('mic')?.addEventListener('click', () => {
+        api?.sendAction?.('toggle-mic')
+      })
+      document.getElementById('camera')?.addEventListener('click', () => {
+        api?.sendAction?.('toggle-camera')
+      })
+      document.getElementById('chat')?.addEventListener('click', () => {
+        api?.sendAction?.('toggle-chat')
+      })
+      document.getElementById('meeting')?.addEventListener('click', () => {
+        api?.focusMeeting?.()
+      })
+      document.getElementById('stop')?.addEventListener('click', () => {
+        api?.sendAction?.('stop-share')
+      })
+      document.getElementById('leave')?.addEventListener('click', () => {
+        api?.sendAction?.('leave-meeting')
+      })
+    </script>
+  </body>
+</html>

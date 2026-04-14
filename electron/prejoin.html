@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TalkSpace</title>
+    <style>
+      :root { color-scheme: dark; font-family: "Segoe UI", sans-serif; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        background: linear-gradient(180deg, #071638, #06122d);
+        color: #e8f2ff;
+        overflow: hidden;
+      }
+      .app {
+        height: 100%;
+        padding: 14px;
+        display: grid;
+        gap: 12px;
+        grid-template-rows: minmax(0, 1fr) auto auto auto;
+      }
+      .title {
+        margin: 0;
+        font-size: 16px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(76, 175, 144, 0.5);
+        background:
+          radial-gradient(circle at 10% 0%, rgba(70, 215, 170, 0.24), transparent 38%),
+          linear-gradient(135deg, rgba(20, 94, 78, 0.72), rgba(20, 70, 97, 0.58));
+        color: #ddfff3;
+      }
+      .preview {
+        position: relative;
+        border-radius: 12px;
+        overflow: hidden;
+        min-height: 280px;
+        height: 100%;
+        background: #091a38;
+        box-shadow: inset 0 0 0 1px rgba(81, 130, 198, 0.26);
+      }
+      video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .video-blur { filter: blur(1.6px) saturate(1.05); }
+      .video-dim { filter: brightness(0.78) saturate(0.9); }
+      .video-placeholder {
+        position: absolute; inset: 0; display: grid; place-items: center;
+        background: rgba(3, 10, 23, 0.58); color: #a6c0df; z-index: 1;
+      }
+      .overlay-controls {
+        position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+        display: inline-flex; gap: 8px; z-index: 2;
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        padding: 0;
+        backdrop-filter: none;
+      }
+      .overlay-background {
+        position: absolute; right: 14px; bottom: 14px; z-index: 2;
+      }
+      .overlay-background select {
+        min-width: 170px; height: 40px; border-radius: 10px;
+        border: 1px solid rgba(94, 136, 194, 0.44);
+        background: rgba(4, 12, 28, 0.78); color: #e5f1ff; padding: 0 10px;
+      }
+      .toggle {
+        width: 52px; min-width: 52px; height: 52px; border-radius: 10px;
+        border: 1px solid rgba(112, 148, 194, 0.38);
+        background: rgba(12, 21, 38, 0.78); color: #e4eefc;
+        display: inline-flex; align-items: center; justify-content: center;
+        padding: 0; cursor: pointer;
+      }
+      .toggle-icon { display: inline-flex; align-items: center; justify-content: center; }
+      .toggle-icon svg { width: 18px; height: 18px; }
+      .toggle.active { border-color: rgba(88, 210, 199, 0.58); background: rgba(20, 73, 92, 0.62); }
+      .toggle.off { border-color: rgba(245, 158, 11, 0.5); background: rgba(95, 56, 9, 0.45); }
+      .toggle:disabled { opacity: .6; cursor: not-allowed; }
+      .controls, .devices { display: grid; grid-template-columns: 1fr; gap: 10px; }
+      .devices { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
+      .field { display: grid; gap: 6px; color: #c5dcf8; font-size: 12px; min-width: 0; }
+      .field span { color: #a8c4e8; }
+      select, button.action {
+        height: 40px; border-radius: 10px;
+        border: 1px solid rgba(78, 123, 189, 0.34);
+        background: rgba(11, 30, 64, 0.84); color: #e5f1ff;
+        padding: 0 10px;
+      }
+      .field select { width: 100%; min-width: 0; max-width: 100%; }
+      .bottom { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding-bottom: 12px; }
+      .start {
+        border: 0; min-width: 120px;
+        background: linear-gradient(135deg, #4ebc9d, #45a68f);
+        font-weight: 600; cursor: pointer;
+      }
+      .notice, .warning {
+        border-radius: 10px; padding: 9px 10px; font-size: 13px;
+      }
+      .notice { border: 1px solid rgba(45, 212, 191, 0.4); background: rgba(6, 78, 59, 0.28); color: #5eead4; }
+      .warning { border: 1px solid rgba(245, 158, 11, 0.45); background: rgba(120, 53, 15, 0.25); color: #fbbf24; }
+      @media (max-width: 760px) {
+        .overlay-controls { justify-content: center; }
+        .toggle { width: 48px; min-width: 48px; height: 48px; }
+        .overlay-background { right: 10px; bottom: 10px; }
+        .overlay-background select { min-width: 120px; max-width: 150px; font-size: 12px; padding: 0 8px; }
+      }
+      @media (max-height: 660px) {
+        .app {
+          padding: 10px;
+          gap: 8px;
+        }
+        .preview {
+          min-height: 220px;
+        }
+        .overlay-controls {
+          bottom: 10px;
+          gap: 6px;
+        }
+        .toggle {
+          width: 44px;
+          min-width: 44px;
+          height: 44px;
+        }
+        .toggle-icon svg {
+          width: 16px;
+          height: 16px;
+        }
+        .overlay-background {
+          right: 10px;
+          bottom: 10px;
+        }
+        .overlay-background select {
+          min-width: 150px;
+          height: 36px;
+          padding: 0 8px;
+        }
+        .field {
+          gap: 4px;
+          font-size: 11px;
+        }
+        select, button.action {
+          height: 36px;
+          padding: 0 8px;
+        }
+        .start {
+          min-width: 110px;
+        }
+        .bottom {
+          padding-bottom: 8px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+        <div class="preview">
+          <video id="video" autoplay muted playsinline></video>
+          <div id="video-placeholder" class="video-placeholder" style="display:none">Camera is off</div>
+          <div class="overlay-controls">
+          <button id="toggle-mic" class="toggle active" type="button">
+            <span id="toggle-mic-icon" class="toggle-icon"></span>
+          </button>
+            <button id="toggle-cam" class="toggle active" type="button">
+              <span id="toggle-cam-icon" class="toggle-icon"></span>
+            </button>
+          </div>
+          <div class="overlay-background">
+            <select id="background-mode">
+              <option value="none">Background: none</option>
+              <option value="blur">Background: blur</option>
+              <option value="dim">Background: dim</option>
+            </select>
+          </div>
+        </div>
+      <div class="devices">
+        <label class="field">
+          <span>Select microphone</span>
+          <select id="audio-input"></select>
+        </label>
+        <label class="field">
+          <span>Select speaker</span>
+          <select id="audio-output"></select>
+        </label>
+        <label class="field">
+          <span>Select camera</span>
+          <select id="video-input"></select>
+        </label>
+      </div>
+      <div id="audience-note" class="notice" style="display:none">Audience mode: mic/camera stays off.</div>
+      <div id="warning" class="warning" style="display:none"></div>
+      <div class="bottom">
+        <button id="start" class="action start" type="button">Start</button>
+      </div>
+    </div>
+    <script>
+      const params = new URLSearchParams(window.location.search)
+      const requestId = params.get('requestId') || ''
+      const video = document.getElementById('video')
+      const placeholder = document.getElementById('video-placeholder')
+      const warning = document.getElementById('warning')
+      const audienceNote = document.getElementById('audience-note')
+      const backgroundMode = document.getElementById('background-mode')
+      const audioInput = document.getElementById('audio-input')
+      const audioOutput = document.getElementById('audio-output')
+      const videoInput = document.getElementById('video-input')
+      const toggleMic = document.getElementById('toggle-mic')
+      const toggleMicIcon = document.getElementById('toggle-mic-icon')
+      const toggleCam = document.getElementById('toggle-cam')
+      const toggleCamIcon = document.getElementById('toggle-cam-icon')
+      const btnStart = document.getElementById('start')
+
+      let stream = null
+      let joinAsAudience = false
+      let micEnabled = true
+      let camEnabled = true
+      const getMicIconSvg = (enabled) =>
+        enabled
+          ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3z"/><path d="M17 11a5 5 0 0 1-10 0M12 16v4M9 20h6"/></svg>'
+          : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3z"/><path d="M17 11a5 5 0 0 1-3.3 4.7M12 16v4M9 20h6M3 3l18 18"/></svg>'
+      const getCameraIconSvg = (enabled) =>
+        enabled
+          ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1.5l3.5-2v9l-3.5-2V16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z"/></svg>'
+          : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1.5l3.5-2v9l-3.5-2V16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8zM3 3l18 18"/></svg>'
+      const showWarning = (text) => {
+        warning.textContent = text || ''
+        warning.style.display = text ? 'block' : 'none'
+      }
+
+      const setToggleState = () => {
+        toggleMic.classList.toggle('active', micEnabled)
+        toggleMic.classList.toggle('off', !micEnabled)
+        toggleMicIcon.innerHTML = getMicIconSvg(micEnabled)
+        toggleCam.classList.toggle('active', camEnabled)
+        toggleCam.classList.toggle('off', !camEnabled)
+        toggleMic.title = micEnabled ? 'Microphone on' : 'Microphone off'
+        toggleCam.title = camEnabled ? 'Camera on' : 'Camera off'
+        toggleCamIcon.innerHTML = getCameraIconSvg(camEnabled)
+        placeholder.style.display = camEnabled ? 'none' : 'grid'
+      }
+
+      const stopPreview = () => {
+        if (!stream) return
+        stream.getTracks().forEach((track) => track.stop())
+        stream = null
+        video.srcObject = null
+      }
+
+      const fillSelect = (el, devices, fallbackLabel) => {
+        el.innerHTML = ''
+        const def = document.createElement('option')
+        def.value = ''
+        def.textContent = `Default ${fallbackLabel}`
+        el.appendChild(def)
+        devices.forEach((d) => {
+          const opt = document.createElement('option')
+          opt.value = d.deviceId
+          opt.textContent = d.label || `${fallbackLabel} (${d.deviceId.slice(0,6)})`
+          el.appendChild(opt)
+        })
+      }
+
+      const loadDevices = async () => {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        fillSelect(audioInput, devices.filter((d) => d.kind === 'audioinput'), 'microphone')
+        fillSelect(audioOutput, devices.filter((d) => d.kind === 'audiooutput'), 'speaker')
+        fillSelect(videoInput, devices.filter((d) => d.kind === 'videoinput'), 'camera')
+      }
+
+      const applyBackground = () => {
+        video.classList.remove('video-blur', 'video-dim')
+        if (backgroundMode.value === 'blur') video.classList.add('video-blur')
+        if (backgroundMode.value === 'dim') video.classList.add('video-dim')
+      }
+
+      const startPreview = async () => {
+        stopPreview()
+        if (!micEnabled && !camEnabled) {
+          setToggleState()
+          return
+        }
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: micEnabled ? { deviceId: audioInput.value ? { exact: audioInput.value } : undefined } : false,
+            video: camEnabled ? { deviceId: videoInput.value ? { exact: videoInput.value } : undefined, width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+          })
+          video.srcObject = stream
+          await video.play().catch(() => undefined)
+          if (audioOutput.value && 'setSinkId' in video) {
+            await video.setSinkId(audioOutput.value).catch(() => undefined)
+          }
+          showWarning('')
+        } catch (e) {
+          showWarning(e?.message || 'Cannot access microphone/camera.')
+        }
+        setToggleState()
+      }
+
+      const emitConfirm = () => {
+        window.prejoinAPI.confirm(requestId, {
+          micEnabled,
+          camEnabled,
+          backgroundMode: backgroundMode.value,
+          microphoneDeviceId: audioInput.value || undefined,
+          speakerDeviceId: audioOutput.value || undefined,
+          cameraDeviceId: videoInput.value || undefined,
+        })
+      }
+
+      toggleMic.addEventListener('click', () => {
+        if (joinAsAudience) return
+        micEnabled = !micEnabled
+        void startPreview()
+      })
+
+      toggleCam.addEventListener('click', () => {
+        if (joinAsAudience) return
+        camEnabled = !camEnabled
+        void startPreview()
+      })
+
+      audioInput.addEventListener('change', () => void startPreview())
+      audioOutput.addEventListener('change', () => void startPreview())
+      videoInput.addEventListener('change', () => void startPreview())
+      backgroundMode.addEventListener('change', applyBackground)
+      btnStart.addEventListener('click', emitConfirm)
+      window.addEventListener('beforeunload', stopPreview)
+
+      window.prejoinAPI.onInit(async (payload) => {
+        if (!payload || payload.requestId !== requestId) return
+        joinAsAudience = Boolean(payload.joinAsAudience)
+        micEnabled = payload.initialSettings?.micEnabled ?? !joinAsAudience
+        camEnabled = payload.initialSettings?.camEnabled ?? !joinAsAudience
+        backgroundMode.value = payload.initialSettings?.backgroundMode || 'none'
+        audienceNote.style.display = joinAsAudience ? 'block' : 'none'
+        toggleMic.disabled = joinAsAudience
+        toggleCam.disabled = joinAsAudience
+        audioInput.disabled = joinAsAudience
+        videoInput.disabled = joinAsAudience
+
+        await loadDevices()
+        if (payload.initialSettings?.microphoneDeviceId) audioInput.value = payload.initialSettings.microphoneDeviceId
+        if (payload.initialSettings?.speakerDeviceId) audioOutput.value = payload.initialSettings.speakerDeviceId
+        if (payload.initialSettings?.cameraDeviceId) videoInput.value = payload.initialSettings.cameraDeviceId
+        applyBackground()
+        await startPreview()
+      })
+
+      window.prejoinAPI.ready(requestId)
+    </script>
+  </body>
+</html>
+
