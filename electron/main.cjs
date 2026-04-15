@@ -526,23 +526,25 @@ const openConferenceWindow = async (parentWindow, payload = {}) => {
 
 const openPrejoinWindow = async (parentWindow, payload = {}) => {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const PREJOIN_SIZE = 600
+  const PREJOIN_WIDTH = 660
+  const PREJOIN_HEIGHT = 520
 
   return await new Promise((resolve) => {
     const windowTitle = String(payload?.roomTitle || 'TalkSpace')
     const prejoinWindow = new BrowserWindow({
-      width: PREJOIN_SIZE,
-      height: PREJOIN_SIZE,
-      minWidth: PREJOIN_SIZE,
-      minHeight: PREJOIN_SIZE,
-      maxWidth: PREJOIN_SIZE,
-      maxHeight: PREJOIN_SIZE,
+      width: PREJOIN_WIDTH,
+      height: PREJOIN_HEIGHT,
+      minWidth: PREJOIN_WIDTH,
+      minHeight: PREJOIN_HEIGHT,
+      maxWidth: PREJOIN_WIDTH,
+      maxHeight: PREJOIN_HEIGHT,
       resizable: false,
       maximizable: false,
       fullscreenable: false,
       useContentSize: true,
       show: false,
       title: windowTitle,
+      icon: selectSourceWindowIcon,
       parent: parentWindow || undefined,
       modal: Boolean(parentWindow),
       autoHideMenuBar: true,
@@ -558,8 +560,8 @@ const openPrejoinWindow = async (parentWindow, payload = {}) => {
 
     prejoinWindow.once('ready-to-show', () => {
       if (prejoinWindow.isDestroyed()) return
-      prejoinWindow.setContentSize(PREJOIN_SIZE, PREJOIN_SIZE)
-      prejoinWindow.setSize(PREJOIN_SIZE, PREJOIN_SIZE)
+      prejoinWindow.setContentSize(PREJOIN_WIDTH, PREJOIN_HEIGHT)
+      prejoinWindow.setSize(PREJOIN_WIDTH, PREJOIN_HEIGHT)
       prejoinWindow.center()
       prejoinWindow.show()
     })
@@ -591,6 +593,11 @@ const openPrejoinWindow = async (parentWindow, payload = {}) => {
         prejoinWindow.webContents.send('prejoin:init', {
           requestId,
           roomTitle: String(payload?.roomTitle || 'TalkSpace'),
+          userInfo: payload?.userInfo || null,
+          roomInfo: payload?.roomInfo || null,
+          allowedJoinRoles: Array.isArray(payload?.allowedJoinRoles)
+            ? payload.allowedJoinRoles
+            : undefined,
           joinAsAudience: Boolean(payload?.joinAsAudience),
           initialSettings: payload?.initialSettings || {},
         })

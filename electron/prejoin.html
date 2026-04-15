@@ -5,40 +5,140 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TalkSpace</title>
     <style>
-      :root { color-scheme: dark; font-family: "Segoe UI", sans-serif; }
-      html, body { height: 100%; }
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", sans-serif;
+        --desktop-vc-header-bg: rgba(22, 30, 42, 0.95);
+        --desktop-vc-header-border: rgba(137, 156, 182, 0.24);
+        --prejoin-bg-top: #202b3a;
+        --prejoin-bg-bottom: #161f2c;
+        --surface-1: rgba(17, 27, 42, 0.78);
+        --surface-2: rgba(9, 19, 33, 0.9);
+        --surface-3: rgba(26, 40, 61, 0.94);
+        --border-muted: rgba(147, 169, 199, 0.26);
+        --text-primary: #e8eff8;
+        --text-secondary: #a8b8cd;
+        --accent: #22d3ee;
+        --accent-strong: #0ea5c2;
+        --success: #34d399;
+        --warning: #fbbf24;
+      }
+      html,
+      body {
+        height: 100%;
+      }
       body {
         margin: 0;
-        background: linear-gradient(180deg, #071638, #06122d);
-        color: #e8f2ff;
+        background: linear-gradient(180deg, var(--prejoin-bg-top), var(--prejoin-bg-bottom));
+        color: var(--text-primary);
         overflow: hidden;
       }
       .app {
         height: 100%;
-        padding: 14px;
+        padding: 12px;
+        box-sizing: border-box;
         display: grid;
-        gap: 12px;
-        grid-template-rows: minmax(0, 1fr) auto auto auto;
+        gap: 10px;
+        grid-template-rows: auto minmax(0, 1fr) auto auto auto;
       }
-      .title {
+      .room-card {
+        border: 1px solid var(--border-muted);
+        background: var(--surface-1);
+        box-shadow: inset 0 1px 0 rgba(190, 208, 232, 0.08);
+        border-radius: 12px;
+        padding: 10px;
+        display: grid;
+        gap: 8px;
+      }
+      .room-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .room-title-wrap {
+        min-width: 0;
+      }
+      .room-title {
         margin: 0;
-        font-size: 16px;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(76, 175, 144, 0.5);
-        background:
-          radial-gradient(circle at 10% 0%, rgba(70, 215, 170, 0.24), transparent 38%),
-          linear-gradient(135deg, rgba(20, 94, 78, 0.72), rgba(20, 70, 97, 0.58));
-        color: #ddfff3;
+        font-size: 15px;
+        line-height: 1.3;
+        color: var(--text-primary);
+      }
+      .room-subtitle {
+        margin: 2px 0 0;
+        color: var(--text-secondary);
+        font-size: 12px;
+      }
+      .room-flags {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .room-status {
+        height: 24px;
+        border-radius: 999px;
+        padding: 0 9px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        font-weight: 700;
+        border: 1px solid transparent;
+        background: rgba(8, 16, 28, 0.66);
+        color: var(--text-secondary);
+      }
+      .room-status-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: currentColor;
+      }
+      .room-status-open {
+        color: var(--success);
+        border-color: rgba(52, 211, 153, 0.4);
+      }
+      .room-status-scheduled {
+        color: var(--warning);
+        border-color: rgba(251, 191, 36, 0.34);
+      }
+      .room-status-closed {
+        color: var(--text-secondary);
+        border-color: rgba(107, 114, 128, 0.34);
+      }
+      .chip {
+        height: 24px;
+        border-radius: 999px;
+        padding: 0 9px;
+        border: 1px solid var(--border-muted);
+        background: rgba(8, 17, 30, 0.52);
+        color: var(--text-secondary);
+        display: inline-flex;
+        align-items: center;
+        font-size: 11px;
+      }
+      .room-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .room-description {
+        margin: 0;
+        color: #bfd1e6;
+        font-size: 12px;
+        line-height: 1.35;
       }
       .preview {
         position: relative;
         border-radius: 12px;
         overflow: hidden;
-        min-height: 280px;
+        min-height: 220px;
         height: 100%;
-        background: #091a38;
-        box-shadow: inset 0 0 0 1px rgba(81, 130, 198, 0.26);
+        background: var(--surface-2);
+        box-shadow: inset 0 0 0 1px rgba(157, 181, 214, 0.2);
       }
       video {
         width: 100%;
@@ -46,200 +146,664 @@
         object-fit: cover;
         display: block;
       }
-      .video-blur { filter: blur(1.6px) saturate(1.05); }
-      .video-dim { filter: brightness(0.78) saturate(0.9); }
+      .video-blur {
+        filter: blur(1.6px) saturate(1.05);
+      }
+      .video-nature {
+        filter: saturate(1.22) contrast(1.03) hue-rotate(-10deg);
+      }
+      .video-office {
+        filter: saturate(0.88) contrast(1.06) brightness(1.04);
+      }
       .video-placeholder {
-        position: absolute; inset: 0; display: grid; place-items: center;
-        background: rgba(3, 10, 23, 0.58); color: #a6c0df; z-index: 1;
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: rgba(5, 11, 21, 0.56);
+        z-index: 1;
+      }
+      .video-placeholder-scene {
+        position: absolute;
+        inset: 0;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: cover;
+        display: none;
+      }
+      .video-placeholder-scene::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, rgba(7, 13, 24, 0.24), rgba(4, 10, 19, 0.42));
+      }
+      .video-placeholder.scene-visible .video-placeholder-scene {
+        display: block;
+      }
+      .video-placeholder.scene-visible .video-avatar {
+        display: none;
+      }
+      .video-avatar {
+        width: 112px;
+        height: 112px;
+        border-radius: 999px;
+        border: 1px solid rgba(166, 196, 230, 0.42);
+        background: radial-gradient(circle at 30% 30%, rgba(62, 97, 141, 0.42), rgba(26, 45, 73, 0.88));
+        box-shadow: 0 16px 30px rgba(0, 0, 0, 0.28);
+        overflow: hidden;
+        display: grid;
+        place-items: center;
+      }
+      .video-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .video-avatar-fallback {
+        width: 100%;
+        height: 100%;
+        display: grid;
+        place-items: center;
+        color: #d9ecff;
+      }
+      .video-avatar-fallback svg {
+        width: 54px;
+        height: 54px;
+        opacity: 0.94;
       }
       .overlay-controls {
-        position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
-        display: inline-flex; gap: 8px; z-index: 2;
-        background: transparent;
-        border: 0;
-        border-radius: 0;
-        padding: 0;
-        backdrop-filter: none;
+        position: absolute;
+        left: 50%;
+        bottom: 12px;
+        transform: translateX(-50%);
+        display: inline-flex;
+        gap: 8px;
+        z-index: 2;
       }
       .overlay-background {
-        position: absolute; right: 14px; bottom: 14px; z-index: 2;
+        position: absolute;
+        right: 12px;
+        bottom: 12px;
+        z-index: 2;
       }
       .overlay-background select {
-        min-width: 170px; height: 40px; border-radius: 10px;
-        border: 1px solid rgba(94, 136, 194, 0.44);
-        background: rgba(4, 12, 28, 0.78); color: #e5f1ff; padding: 0 10px;
-      }
-      .toggle {
-        width: 52px; min-width: 52px; height: 52px; border-radius: 10px;
-        border: 1px solid rgba(112, 148, 194, 0.38);
-        background: rgba(12, 21, 38, 0.78); color: #e4eefc;
-        display: inline-flex; align-items: center; justify-content: center;
-        padding: 0; cursor: pointer;
-      }
-      .toggle-icon { display: inline-flex; align-items: center; justify-content: center; }
-      .toggle-icon svg { width: 18px; height: 18px; }
-      .toggle.active { border-color: rgba(88, 210, 199, 0.58); background: rgba(20, 73, 92, 0.62); }
-      .toggle.off { border-color: rgba(245, 158, 11, 0.5); background: rgba(95, 56, 9, 0.45); }
-      .toggle:disabled { opacity: .6; cursor: not-allowed; }
-      .controls, .devices { display: grid; grid-template-columns: 1fr; gap: 10px; }
-      .devices { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
-      .field { display: grid; gap: 6px; color: #c5dcf8; font-size: 12px; min-width: 0; }
-      .field span { color: #a8c4e8; }
-      select, button.action {
-        height: 40px; border-radius: 10px;
-        border: 1px solid rgba(78, 123, 189, 0.34);
-        background: rgba(11, 30, 64, 0.84); color: #e5f1ff;
+        min-width: 170px;
+        height: 38px;
+        border-radius: 10px;
+        border: 1px solid var(--border-muted);
+        background: rgba(10, 20, 34, 0.88);
+        color: var(--text-primary);
         padding: 0 10px;
       }
-      .field select { width: 100%; min-width: 0; max-width: 100%; }
-      .bottom { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding-bottom: 12px; }
-      .start {
-        border: 0; min-width: 120px;
-        background: linear-gradient(135deg, #4ebc9d, #45a68f);
-        font-weight: 600; cursor: pointer;
+      .toggle {
+        width: 50px;
+        min-width: 50px;
+        height: 50px;
+        border-radius: 10px;
+        border: 1px solid var(--border-muted);
+        background: rgba(14, 25, 42, 0.84);
+        color: var(--text-primary);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        cursor: pointer;
       }
-      .notice, .warning {
-        border-radius: 10px; padding: 9px 10px; font-size: 13px;
+      .toggle-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
       }
-      .notice { border: 1px solid rgba(45, 212, 191, 0.4); background: rgba(6, 78, 59, 0.28); color: #5eead4; }
-      .warning { border: 1px solid rgba(245, 158, 11, 0.45); background: rgba(120, 53, 15, 0.25); color: #fbbf24; }
-      @media (max-width: 760px) {
-        .overlay-controls { justify-content: center; }
-        .toggle { width: 48px; min-width: 48px; height: 48px; }
-        .overlay-background { right: 10px; bottom: 10px; }
-        .overlay-background select { min-width: 120px; max-width: 150px; font-size: 12px; padding: 0 8px; }
+      .toggle-icon svg {
+        width: 18px;
+        height: 18px;
       }
-      @media (max-height: 660px) {
+      .toggle.active {
+        border-color: rgba(34, 211, 238, 0.52);
+        background: rgba(11, 88, 106, 0.58);
+      }
+      .toggle.off {
+        border-color: rgba(245, 158, 11, 0.5);
+        background: rgba(95, 56, 9, 0.45);
+      }
+      .toggle:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .devices {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        align-items: start;
+      }
+      .field {
+        display: grid;
+        gap: 6px;
+        color: #c8d7eb;
+        font-size: 12px;
+        min-width: 0;
+      }
+      .field span {
+        color: var(--text-secondary);
+      }
+      .field-tools {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 28px;
+      }
+      .test-btn {
+        height: 28px;
+        border-radius: 8px;
+        border: 1px solid var(--border-muted);
+        background: rgba(19, 34, 53, 0.9);
+        color: var(--text-primary);
+        padding: 0 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .test-btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .test-btn.active {
+        border-color: rgba(52, 211, 153, 0.42);
+        background: rgba(13, 79, 71, 0.66);
+      }
+      .mic-meter {
+        flex: 1;
+        height: 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(147, 169, 199, 0.24);
+        background: rgba(6, 14, 25, 0.7);
+        overflow: hidden;
+        min-width: 56px;
+      }
+      .mic-meter-fill {
+        height: 100%;
+        width: 6%;
+        background: linear-gradient(90deg, #34d399, #22d3ee);
+        transition: width 80ms linear;
+      }
+      select,
+      button.action {
+        height: 38px;
+        border-radius: 10px;
+        border: 1px solid var(--border-muted);
+        background: var(--surface-3);
+        color: var(--text-primary);
+        padding: 0 10px;
+      }
+      .field select {
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
+      }
+      .notice,
+      .warning {
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+      .notice {
+        border: 1px solid rgba(45, 212, 191, 0.4);
+        background: rgba(6, 78, 59, 0.28);
+        color: #81f5e4;
+      }
+      .warning {
+        border: 1px solid rgba(245, 158, 11, 0.45);
+        background: rgba(120, 53, 15, 0.25);
+        color: #fbbf24;
+      }
+      .bottom {
+        display: flex;
+        justify-content: center;
+      }
+      .join-actions {
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .join-btn {
+        height: 42px;
+        width: 100%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 0 14px;
+        line-height: 1.2;
+        border: 1px solid rgba(34, 211, 238, 0.46);
+        background: linear-gradient(135deg, rgba(8, 137, 163, 0.92), rgba(13, 117, 138, 0.92));
+        color: #ecfeff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .join-btn.member {
+        border-color: rgba(16, 185, 129, 0.52);
+        background: linear-gradient(135deg, rgba(6, 122, 113, 0.95), rgba(6, 149, 113, 0.95));
+        box-shadow: 0 10px 24px rgba(7, 86, 76, 0.34);
+      }
+      .join-btn.listener {
+        border-color: rgba(245, 158, 11, 0.48);
+        background: linear-gradient(135deg, rgba(110, 67, 16, 0.9), rgba(145, 86, 10, 0.9));
+      }
+      .join-btn.host {
+        border-color: rgba(59, 130, 246, 0.48);
+        background: linear-gradient(135deg, rgba(18, 58, 118, 0.9), rgba(24, 87, 164, 0.9));
+      }
+      .join-btn.cohost {
+        border-color: rgba(129, 140, 248, 0.48);
+        background: linear-gradient(135deg, rgba(46, 48, 115, 0.9), rgba(66, 62, 149, 0.9));
+      }
+      .join-actions.single {
+        width: auto;
+        grid-template-columns: minmax(240px, 340px);
+        justify-content: center;
+      }
+      button.action:hover:not(:disabled),
+      .toggle:hover:not(:disabled),
+      select:hover {
+        border-color: rgba(34, 211, 238, 0.56);
+      }
+      button.action:focus-visible,
+      .toggle:focus-visible,
+      select:focus-visible {
+        outline: 2px solid rgba(34, 211, 238, 0.35);
+        outline-offset: 1px;
+      }
+      @media (max-height: 760px) {
         .app {
           padding: 10px;
           gap: 8px;
         }
-        .preview {
-          min-height: 220px;
+        .room-description {
+          display: none;
         }
-        .overlay-controls {
-          bottom: 10px;
-          gap: 6px;
+        .preview {
+          min-height: 190px;
         }
         .toggle {
           width: 44px;
           min-width: 44px;
           height: 44px;
         }
-        .toggle-icon svg {
-          width: 16px;
-          height: 16px;
-        }
-        .overlay-background {
-          right: 10px;
-          bottom: 10px;
-        }
-        .overlay-background select {
-          min-width: 150px;
-          height: 36px;
-          padding: 0 8px;
-        }
-        .field {
-          gap: 4px;
-          font-size: 11px;
-        }
-        select, button.action {
-          height: 36px;
-          padding: 0 8px;
-        }
-        .start {
-          min-width: 110px;
-        }
-        .bottom {
-          padding-bottom: 8px;
-        }
       }
     </style>
   </head>
   <body>
     <div class="app">
-        <div class="preview">
-          <video id="video" autoplay muted playsinline></video>
-          <div id="video-placeholder" class="video-placeholder" style="display:none">Camera is off</div>
-          <div class="overlay-controls">
-          <button id="toggle-mic" class="toggle active" type="button">
-            <span id="toggle-mic-icon" class="toggle-icon"></span>
-          </button>
-            <button id="toggle-cam" class="toggle active" type="button">
-              <span id="toggle-cam-icon" class="toggle-icon"></span>
-            </button>
+      <div class="room-card">
+        <div class="room-top">
+          <div class="room-title-wrap">
+            <h2 id="room-title" class="room-title">Room</h2>
+            <p id="room-subtitle" class="room-subtitle">General</p>
           </div>
-          <div class="overlay-background">
-            <select id="background-mode">
-              <option value="none">Background: none</option>
-              <option value="blur">Background: blur</option>
-              <option value="dim">Background: dim</option>
-            </select>
+          <div class="room-flags">
+            <span id="room-status" class="room-status room-status-closed">
+              <span class="room-status-dot"></span>
+              <span id="room-status-text">Closed</span>
+            </span>
+            <span id="chip-private" class="chip" style="display:none">Private</span>
+            <span id="chip-audience" class="chip" style="display:none">Audience enabled</span>
           </div>
         </div>
+        <div class="room-meta">
+          <span id="room-participants" class="chip">0 participants</span>
+          <span id="room-schedule" class="chip">No schedule</span>
+          <span id="room-host" class="chip">Host</span>
+          <span id="room-name" class="chip">room</span>
+        </div>
+        <p id="room-description" class="room-description" style="display:none"></p>
+      </div>
+
+      <div class="preview">
+        <video id="video" autoplay muted playsinline></video>
+        <div id="video-placeholder" class="video-placeholder" style="display:none">
+          <div id="video-placeholder-scene" class="video-placeholder-scene"></div>
+          <div class="video-avatar">
+            <img id="video-avatar-image" alt="" style="display:none" />
+            <div id="video-avatar-fallback" class="video-avatar-fallback" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 21a8 8 0 0 0-16 0" />
+                <circle cx="12" cy="8" r="4" />
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div class="overlay-controls">
+          <button id="toggle-mic" class="toggle active" type="button"><span id="toggle-mic-icon" class="toggle-icon"></span></button>
+          <button id="toggle-cam" class="toggle active" type="button"><span id="toggle-cam-icon" class="toggle-icon"></span></button>
+        </div>
+        <div class="overlay-background">
+          <select id="background-mode">
+            <option value="none">Background: none</option>
+            <option value="blur">Background: blur</option>
+            <option value="nature">Background: nature</option>
+            <option value="office">Background: office</option>
+          </select>
+        </div>
+      </div>
+
       <div class="devices">
         <label class="field">
           <span>Select microphone</span>
           <select id="audio-input"></select>
+          <div class="field-tools">
+            <button id="test-mic" class="test-btn" type="button">Test mic</button>
+            <div class="mic-meter" aria-hidden="true">
+              <div id="mic-meter-fill" class="mic-meter-fill"></div>
+            </div>
+          </div>
         </label>
         <label class="field">
           <span>Select speaker</span>
           <select id="audio-output"></select>
+          <div class="field-tools">
+            <button id="test-speaker" class="test-btn" type="button">Test speaker</button>
+          </div>
         </label>
         <label class="field">
           <span>Select camera</span>
           <select id="video-input"></select>
         </label>
       </div>
+
       <div id="audience-note" class="notice" style="display:none">Audience mode: mic/camera stays off.</div>
       <div id="warning" class="warning" style="display:none"></div>
+
       <div class="bottom">
-        <button id="start" class="action start" type="button">Start</button>
+        <div id="join-actions" class="join-actions">
+          <button id="join-member" class="action join-btn member" type="button">Join as member</button>
+          <button id="join-listener" class="action join-btn listener" type="button">Join as audience</button>
+          <button id="join-host" class="action join-btn host" type="button">Join as Host</button>
+          <button id="join-cohost" class="action join-btn cohost" type="button">Join as Co-Host</button>
+        </div>
       </div>
     </div>
+
     <script>
       const params = new URLSearchParams(window.location.search)
       const requestId = params.get('requestId') || ''
+
       const video = document.getElementById('video')
       const placeholder = document.getElementById('video-placeholder')
+      const placeholderScene = document.getElementById('video-placeholder-scene')
+      const videoAvatarImage = document.getElementById('video-avatar-image')
+      const videoAvatarFallback = document.getElementById('video-avatar-fallback')
       const warning = document.getElementById('warning')
       const audienceNote = document.getElementById('audience-note')
       const backgroundMode = document.getElementById('background-mode')
       const audioInput = document.getElementById('audio-input')
       const audioOutput = document.getElementById('audio-output')
       const videoInput = document.getElementById('video-input')
+      const btnTestMic = document.getElementById('test-mic')
+      const btnTestSpeaker = document.getElementById('test-speaker')
+      const micMeterFill = document.getElementById('mic-meter-fill')
       const toggleMic = document.getElementById('toggle-mic')
       const toggleMicIcon = document.getElementById('toggle-mic-icon')
       const toggleCam = document.getElementById('toggle-cam')
       const toggleCamIcon = document.getElementById('toggle-cam-icon')
-      const btnStart = document.getElementById('start')
+      const joinActions = document.getElementById('join-actions')
+      const btnJoinMember = document.getElementById('join-member')
+      const btnJoinListener = document.getElementById('join-listener')
+      const btnJoinHost = document.getElementById('join-host')
+      const btnJoinCoHost = document.getElementById('join-cohost')
+
+      const roomTitle = document.getElementById('room-title')
+      const roomSubtitle = document.getElementById('room-subtitle')
+      const roomStatus = document.getElementById('room-status')
+      const roomStatusText = document.getElementById('room-status-text')
+      const roomParticipants = document.getElementById('room-participants')
+      const roomSchedule = document.getElementById('room-schedule')
+      const roomHost = document.getElementById('room-host')
+      const roomName = document.getElementById('room-name')
+      const roomDescription = document.getElementById('room-description')
+      const chipPrivate = document.getElementById('chip-private')
+      const chipAudience = document.getElementById('chip-audience')
 
       let stream = null
       let joinAsAudience = false
       let micEnabled = true
       let camEnabled = true
+      let selectedJoinRole = 'member'
+      let allowedJoinRoles = ['member', 'listener']
+      let viewerName = 'You'
+      let viewerAvatar = ''
+      let micTestStream = null
+      let micTestContext = null
+      let micTestAnalyser = null
+      let micTestAnimationFrame = 0
+      let speakerTestContext = null
+      let speakerTestTimeout = 0
+      const speakerTestAudio = new Audio()
+      speakerTestAudio.autoplay = false
+      speakerTestAudio.muted = false
+      const sceneBackgroundByMode = {
+        nature: new URL('../public/backgrounds/bg-nature.jpg', window.location.href).href,
+        office: new URL('../public/backgrounds/bg-office.jpg', window.location.href).href,
+      }
+
+      const roleButtons = {
+        member: btnJoinMember,
+        listener: btnJoinListener,
+        host: btnJoinHost,
+        co_host: btnJoinCoHost,
+      }
+
       const getMicIconSvg = (enabled) =>
         enabled
           ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3z"/><path d="M17 11a5 5 0 0 1-10 0M12 16v4M9 20h6"/></svg>'
           : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3z"/><path d="M17 11a5 5 0 0 1-3.3 4.7M12 16v4M9 20h6M3 3l18 18"/></svg>'
+
       const getCameraIconSvg = (enabled) =>
         enabled
           ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1.5l3.5-2v9l-3.5-2V16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z"/></svg>'
           : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1.5l3.5-2v9l-3.5-2V16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8zM3 3l18 18"/></svg>'
+
       const showWarning = (text) => {
         warning.textContent = text || ''
         warning.style.display = text ? 'block' : 'none'
+      }
+
+      const renderViewerAvatar = () => {
+        videoAvatarFallback.style.display = 'grid'
+        videoAvatarImage.style.display = 'none'
+        videoAvatarImage.removeAttribute('src')
+        videoAvatarImage.alt = viewerName || 'User avatar'
+
+        if (!viewerAvatar) return
+
+        videoAvatarImage.onload = () => {
+          videoAvatarImage.style.display = 'block'
+          videoAvatarFallback.style.display = 'none'
+        }
+        videoAvatarImage.onerror = () => {
+          videoAvatarImage.style.display = 'none'
+          videoAvatarFallback.style.display = 'grid'
+        }
+        videoAvatarImage.src = viewerAvatar
+      }
+
+      const resetMicMeter = () => {
+        micMeterFill.style.width = '6%'
+      }
+
+      const stopMicTest = async () => {
+        if (micTestAnimationFrame) {
+          cancelAnimationFrame(micTestAnimationFrame)
+          micTestAnimationFrame = 0
+        }
+        if (micTestStream) {
+          micTestStream.getTracks().forEach((track) => track.stop())
+          micTestStream = null
+        }
+        if (micTestContext) {
+          const ctx = micTestContext
+          micTestContext = null
+          await ctx.close().catch(() => undefined)
+        }
+        micTestAnalyser = null
+        btnTestMic.classList.remove('active')
+        btnTestMic.textContent = 'Test mic'
+        resetMicMeter()
+      }
+
+      const startMicTest = async () => {
+        await stopMicTest()
+        try {
+          micTestStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              deviceId: audioInput.value ? { exact: audioInput.value } : undefined,
+            },
+            video: false,
+          })
+          const AudioCtx = window.AudioContext || window.webkitAudioContext
+          if (!AudioCtx) throw new Error('Audio test is not supported.')
+
+          micTestContext = new AudioCtx()
+          const source = micTestContext.createMediaStreamSource(micTestStream)
+          micTestAnalyser = micTestContext.createAnalyser()
+          micTestAnalyser.fftSize = 512
+          source.connect(micTestAnalyser)
+
+          const buffer = new Uint8Array(micTestAnalyser.fftSize)
+          const tick = () => {
+            if (!micTestAnalyser) return
+            micTestAnalyser.getByteTimeDomainData(buffer)
+            let sum = 0
+            for (let i = 0; i < buffer.length; i += 1) {
+              const normalized = (buffer[i] - 128) / 128
+              sum += normalized * normalized
+            }
+            const rms = Math.sqrt(sum / buffer.length)
+            const width = Math.max(6, Math.min(100, Math.round(rms * 300)))
+            micMeterFill.style.width = `${width}%`
+            micTestAnimationFrame = requestAnimationFrame(tick)
+          }
+          tick()
+          btnTestMic.classList.add('active')
+          btnTestMic.textContent = 'Stop test'
+          showWarning('')
+        } catch (error) {
+          await stopMicTest()
+          showWarning(error?.message || 'Cannot test microphone.')
+        }
+      }
+
+      const stopSpeakerTest = async () => {
+        if (speakerTestTimeout) {
+          clearTimeout(speakerTestTimeout)
+          speakerTestTimeout = 0
+        }
+        if (speakerTestContext) {
+          const ctx = speakerTestContext
+          speakerTestContext = null
+          await ctx.close().catch(() => undefined)
+        }
+        speakerTestAudio.pause()
+        speakerTestAudio.srcObject = null
+        btnTestSpeaker.classList.remove('active')
+        btnTestSpeaker.textContent = 'Test speaker'
+      }
+
+      const playSpeakerTest = async () => {
+        await stopSpeakerTest()
+        try {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext
+          if (!AudioCtx) throw new Error('Audio test is not supported.')
+
+          speakerTestContext = new AudioCtx()
+          const destination = speakerTestContext.createMediaStreamDestination()
+          const now = speakerTestContext.currentTime
+          const frequencies = [740, 988, 1318, 988, 740, 988, 1318, 988, 740]
+          const stepSeconds = 0.44
+          const noteDurationSeconds = 0.34
+
+          frequencies.forEach((frequency, index) => {
+            const startAt = now + index * stepSeconds
+            const endAt = startAt + noteDurationSeconds
+            const oscillator = speakerTestContext.createOscillator()
+            const gain = speakerTestContext.createGain()
+            oscillator.type = 'triangle'
+            oscillator.frequency.setValueAtTime(frequency, startAt)
+            gain.gain.setValueAtTime(0.0001, startAt)
+            gain.gain.exponentialRampToValueAtTime(0.5, startAt + 0.015)
+            gain.gain.exponentialRampToValueAtTime(0.0001, endAt)
+            oscillator.connect(gain)
+            gain.connect(destination)
+            oscillator.start(startAt)
+            oscillator.stop(endAt + 0.02)
+          })
+
+          speakerTestAudio.srcObject = destination.stream
+          speakerTestAudio.volume = 1
+          if (audioOutput.value && typeof speakerTestAudio.setSinkId === 'function') {
+            await speakerTestAudio.setSinkId(audioOutput.value)
+          }
+          btnTestSpeaker.classList.add('active')
+          btnTestSpeaker.textContent = 'Playing...'
+          await speakerTestAudio.play()
+          showWarning('')
+          const totalDurationMs = 4000
+          speakerTestTimeout = setTimeout(() => {
+            speakerTestTimeout = 0
+            void stopSpeakerTest()
+          }, totalDurationMs)
+        } catch (error) {
+          await stopSpeakerTest()
+          showWarning(error?.message || 'Cannot test speaker.')
+        }
+      }
+
+      const isListenerRole = () => selectedJoinRole === 'listener'
+      const isRoleAllowed = (role) => allowedJoinRoles.includes(role)
+
+      const applyAllowedRoleButtons = () => {
+        let visibleCount = 0
+        Object.entries(roleButtons).forEach(([role, button]) => {
+          const isVisible = isRoleAllowed(role)
+          button.style.display = isVisible ? 'inline-flex' : 'none'
+          if (isVisible) {
+            visibleCount += 1
+          }
+        })
+        joinActions.classList.toggle('single', visibleCount <= 1)
+      }
+
+      const updateJoinModeLabel = () => {
+        // Internal header was removed; keep method for role-side effects.
+      }
+
+      const applyJoinRoleState = () => {
+        const asListener = isListenerRole()
+        audienceNote.style.display = asListener ? 'block' : 'none'
+        toggleMic.disabled = asListener
+        toggleCam.disabled = asListener
+        audioInput.disabled = asListener
+        videoInput.disabled = asListener
+        btnTestMic.disabled = asListener
+        if (asListener) {
+          micEnabled = false
+          camEnabled = false
+          void stopMicTest()
+        }
+        updateJoinModeLabel()
       }
 
       const setToggleState = () => {
         toggleMic.classList.toggle('active', micEnabled)
         toggleMic.classList.toggle('off', !micEnabled)
         toggleMicIcon.innerHTML = getMicIconSvg(micEnabled)
+
         toggleCam.classList.toggle('active', camEnabled)
         toggleCam.classList.toggle('off', !camEnabled)
+        toggleCamIcon.innerHTML = getCameraIconSvg(camEnabled)
+
         toggleMic.title = micEnabled ? 'Microphone on' : 'Microphone off'
         toggleCam.title = camEnabled ? 'Camera on' : 'Camera off'
-        toggleCamIcon.innerHTML = getCameraIconSvg(camEnabled)
         placeholder.style.display = camEnabled ? 'none' : 'grid'
       }
 
@@ -256,10 +820,11 @@
         def.value = ''
         def.textContent = `Default ${fallbackLabel}`
         el.appendChild(def)
+
         devices.forEach((d) => {
           const opt = document.createElement('option')
           opt.value = d.deviceId
-          opt.textContent = d.label || `${fallbackLabel} (${d.deviceId.slice(0,6)})`
+          opt.textContent = d.label || `${fallbackLabel} (${d.deviceId.slice(0, 6)})`
           el.appendChild(opt)
         })
       }
@@ -272,9 +837,19 @@
       }
 
       const applyBackground = () => {
-        video.classList.remove('video-blur', 'video-dim')
+        video.classList.remove('video-blur', 'video-nature', 'video-office')
         if (backgroundMode.value === 'blur') video.classList.add('video-blur')
-        if (backgroundMode.value === 'dim') video.classList.add('video-dim')
+        if (backgroundMode.value === 'nature') video.classList.add('video-nature')
+        if (backgroundMode.value === 'office') video.classList.add('video-office')
+
+        const sceneUrl = sceneBackgroundByMode[backgroundMode.value]
+        if (sceneUrl) {
+          placeholderScene.style.backgroundImage = `url("${sceneUrl}")`
+          placeholder.classList.add('scene-visible')
+        } else {
+          placeholderScene.style.backgroundImage = ''
+          placeholder.classList.remove('scene-visible')
+        }
       }
 
       const startPreview = async () => {
@@ -286,7 +861,13 @@
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             audio: micEnabled ? { deviceId: audioInput.value ? { exact: audioInput.value } : undefined } : false,
-            video: camEnabled ? { deviceId: videoInput.value ? { exact: videoInput.value } : undefined, width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+            video: camEnabled
+              ? {
+                  deviceId: videoInput.value ? { exact: videoInput.value } : undefined,
+                  width: { ideal: 1280 },
+                  height: { ideal: 720 },
+                }
+              : false,
           })
           video.srcObject = stream
           await video.play().catch(() => undefined)
@@ -300,7 +881,53 @@
         setToggleState()
       }
 
-      const emitConfirm = () => {
+      const updateRoomStatus = (statusRaw) => {
+        const status = String(statusRaw || 'closed').toLowerCase()
+        roomStatus.classList.remove('room-status-open', 'room-status-scheduled', 'room-status-closed')
+        if (status === 'open') {
+          roomStatus.classList.add('room-status-open')
+          roomStatusText.textContent = 'Open'
+          return
+        }
+        if (status === 'scheduled') {
+          roomStatus.classList.add('room-status-scheduled')
+          roomStatusText.textContent = 'Scheduled'
+          return
+        }
+        roomStatus.classList.add('room-status-closed')
+        roomStatusText.textContent = 'Closed'
+      }
+
+      const renderRoomInfo = (payload) => {
+        const info = payload?.roomInfo || {}
+        roomTitle.textContent = info.title || payload?.roomTitle || 'Room'
+        roomSubtitle.textContent = info.category || 'General'
+
+        const count = Number(info.participantCount || 0)
+        const max = Number(info.maxParticipants || 0)
+        roomParticipants.textContent = `${count}${max > 0 ? ` / ${max}` : ''} participants`
+        roomSchedule.textContent = info.scheduleLabel || 'No schedule'
+        roomHost.textContent = `Host: ${info.hostName || '-'}`
+        roomName.textContent = `Room: ${info.roomName || '-'}`
+
+        if (info.description && String(info.description).trim()) {
+          roomDescription.textContent = String(info.description)
+          roomDescription.style.display = 'block'
+        } else {
+          roomDescription.style.display = 'none'
+        }
+
+        chipPrivate.style.display = info.isPrivate ? 'inline-flex' : 'none'
+        chipAudience.style.display = info.audienceEnabled ? 'inline-flex' : 'none'
+        updateRoomStatus(info.status)
+      }
+
+      const emitConfirm = (joinRole) => {
+        if (joinRole && isRoleAllowed(joinRole)) {
+          selectedJoinRole = joinRole
+        }
+        void stopMicTest()
+        void stopSpeakerTest()
         window.prejoinAPI.confirm(requestId, {
           micEnabled,
           camEnabled,
@@ -308,44 +935,100 @@
           microphoneDeviceId: audioInput.value || undefined,
           speakerDeviceId: audioOutput.value || undefined,
           cameraDeviceId: videoInput.value || undefined,
+          joinRole: selectedJoinRole,
         })
       }
 
+      const emitCancel = () => {
+        stopPreview()
+        void stopMicTest()
+        void stopSpeakerTest()
+        window.prejoinAPI.cancel(requestId)
+      }
+
       toggleMic.addEventListener('click', () => {
-        if (joinAsAudience) return
+        if (isListenerRole()) return
         micEnabled = !micEnabled
         void startPreview()
       })
 
       toggleCam.addEventListener('click', () => {
-        if (joinAsAudience) return
+        if (isListenerRole()) return
         camEnabled = !camEnabled
         void startPreview()
       })
 
       audioInput.addEventListener('change', () => void startPreview())
+      audioInput.addEventListener('change', () => {
+        if (btnTestMic.classList.contains('active')) {
+          void startMicTest()
+        }
+      })
       audioOutput.addEventListener('change', () => void startPreview())
+      audioOutput.addEventListener('change', () => {
+        if (btnTestSpeaker.classList.contains('active')) {
+          void playSpeakerTest()
+        }
+      })
       videoInput.addEventListener('change', () => void startPreview())
       backgroundMode.addEventListener('change', applyBackground)
-      btnStart.addEventListener('click', emitConfirm)
-      window.addEventListener('beforeunload', stopPreview)
+      btnTestMic.addEventListener('click', () => {
+        if (btnTestMic.classList.contains('active')) {
+          void stopMicTest()
+          return
+        }
+        void startMicTest()
+      })
+      btnTestSpeaker.addEventListener('click', () => {
+        void playSpeakerTest()
+      })
+      btnJoinMember.addEventListener('click', () => emitConfirm('member'))
+      btnJoinListener.addEventListener('click', () => emitConfirm('listener'))
+      btnJoinHost.addEventListener('click', () => emitConfirm('host'))
+      btnJoinCoHost.addEventListener('click', () => emitConfirm('co_host'))
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') emitCancel()
+      })
+      window.addEventListener('beforeunload', () => {
+        stopPreview()
+        void stopMicTest()
+        void stopSpeakerTest()
+      })
 
       window.prejoinAPI.onInit(async (payload) => {
         if (!payload || payload.requestId !== requestId) return
+
+        const userInfo = payload.userInfo || {}
+        viewerName = String(userInfo.name || userInfo.username || 'You').trim() || 'You'
+        viewerAvatar = typeof userInfo.avatar === 'string' ? userInfo.avatar.trim() : ''
+        renderViewerAvatar()
+
         joinAsAudience = Boolean(payload.joinAsAudience)
-        micEnabled = payload.initialSettings?.micEnabled ?? !joinAsAudience
-        camEnabled = payload.initialSettings?.camEnabled ?? !joinAsAudience
-        backgroundMode.value = payload.initialSettings?.backgroundMode || 'none'
-        audienceNote.style.display = joinAsAudience ? 'block' : 'none'
-        toggleMic.disabled = joinAsAudience
-        toggleCam.disabled = joinAsAudience
-        audioInput.disabled = joinAsAudience
-        videoInput.disabled = joinAsAudience
+        const payloadAllowedRoles = Array.isArray(payload.allowedJoinRoles)
+          ? payload.allowedJoinRoles.filter((role) =>
+              role === 'member' || role === 'listener',
+            )
+          : []
+        allowedJoinRoles = payloadAllowedRoles.length > 0
+          ? payloadAllowedRoles
+          : [joinAsAudience ? 'listener' : 'member']
+        const incomingJoinRole = payload.initialSettings?.joinRole
+        selectedJoinRole = incomingJoinRole && isRoleAllowed(incomingJoinRole)
+          ? incomingJoinRole
+          : allowedJoinRoles[0]
+        micEnabled = payload.initialSettings?.micEnabled ?? !isListenerRole()
+        camEnabled = payload.initialSettings?.camEnabled ?? !isListenerRole()
+        backgroundMode.value = payload.initialSettings?.backgroundMode || 'blur'
+
+        renderRoomInfo(payload)
+        applyAllowedRoleButtons()
+        applyJoinRoleState()
 
         await loadDevices()
         if (payload.initialSettings?.microphoneDeviceId) audioInput.value = payload.initialSettings.microphoneDeviceId
         if (payload.initialSettings?.speakerDeviceId) audioOutput.value = payload.initialSettings.speakerDeviceId
         if (payload.initialSettings?.cameraDeviceId) videoInput.value = payload.initialSettings.cameraDeviceId
+
         applyBackground()
         await startPreview()
       })
@@ -354,4 +1037,3 @@
     </script>
   </body>
 </html>
-

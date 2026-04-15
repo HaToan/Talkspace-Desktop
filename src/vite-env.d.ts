@@ -69,23 +69,44 @@ declare global {
       openPrejoinWindow: (payload: {
         roomTitle: string
         joinAsAudience: boolean
+        userInfo?: {
+          name?: string
+          username?: string
+          avatar?: string
+        }
+        allowedJoinRoles?: Array<'member' | 'listener' | 'host' | 'co_host'>
+        roomInfo?: {
+          title?: string
+          category?: string
+          status?: 'open' | 'scheduled' | 'closed' | string
+          hostName?: string
+          description?: string
+          participantCount?: number
+          maxParticipants?: number
+          isPrivate?: boolean
+          audienceEnabled?: boolean
+          scheduleLabel?: string
+          roomName?: string
+        }
         initialSettings?: {
           micEnabled?: boolean
           camEnabled?: boolean
-          backgroundMode?: 'none' | 'blur' | 'dim'
+          backgroundMode?: 'none' | 'blur' | 'nature' | 'office'
           microphoneDeviceId?: string
           speakerDeviceId?: string
           cameraDeviceId?: string
+          joinRole?: 'member' | 'listener' | 'host' | 'co_host'
         }
       }) => Promise<{
         confirmed: boolean
         settings?: {
           micEnabled: boolean
           camEnabled: boolean
-          backgroundMode: 'none' | 'blur' | 'dim'
+          backgroundMode: 'none' | 'blur' | 'nature' | 'office'
           microphoneDeviceId?: string
           speakerDeviceId?: string
           cameraDeviceId?: string
+          joinRole?: 'member' | 'listener' | 'host' | 'co_host'
         }
       }>
       openConferenceWindow: (payload: {
@@ -95,10 +116,11 @@ declare global {
         prejoinSettings?: {
           micEnabled: boolean
           camEnabled: boolean
-          backgroundMode: 'none' | 'blur' | 'dim'
+          backgroundMode: 'none' | 'blur' | 'nature' | 'office'
           microphoneDeviceId?: string
           speakerDeviceId?: string
           cameraDeviceId?: string
+          joinRole?: 'member' | 'listener' | 'host' | 'co_host'
         }
       }) => Promise<{
         success: boolean

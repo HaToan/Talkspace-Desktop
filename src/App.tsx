@@ -60,10 +60,11 @@ type JoinRoomOptions = {
 type PrejoinDeviceSettings = {
   micEnabled: boolean
   camEnabled: boolean
-  backgroundMode: 'none' | 'blur' | 'dim'
+  backgroundMode: 'none' | 'blur' | 'nature' | 'office'
   microphoneDeviceId?: string
   speakerDeviceId?: string
   cameraDeviceId?: string
+  joinRole?: 'member' | 'listener' | 'host' | 'co_host'
 }
 
 type LaunchConferencePayload = {
@@ -322,10 +323,6 @@ function App() {
 
   const [calendarMonth, setCalendarMonth] = useState(dayjs())
   const [calendarSelectedDay, setCalendarSelectedDay] = useState(dayjs().format('YYYY-MM-DD'))
-  const [prejoinRoomId, setPrejoinRoomId] = useState<string | null>(null)
-  const [prejoinOptions, setPrejoinOptions] = useState<JoinRoomOptions | null>(null)
-  const [prejoinLoading, setPrejoinLoading] = useState(false)
-  const [prejoinError, setPrejoinError] = useState('')
   const [prejoinSettingsByRoom, setPrejoinSettingsByRoom] = useState<
     Record<string, PrejoinDeviceSettings>
   >({})
@@ -515,10 +512,11 @@ function App() {
   }, [participantsRoomId, rooms])
 
   useEffect(() => {
-    if (
-      (page.key === 'detail' || page.key === 'conference') &&
-      !rooms.some((room) => room.id === page.roomId)
-    ) {
+    if (page.key === 'detail') {
+      setPage({ key: 'rooms' })
+      return
+    }
+    if (page.key === 'conference' && !rooms.some((room) => room.id === page.roomId)) {
       setPage({ key: 'rooms' })
     }
   }, [page, rooms])
@@ -720,7 +718,7 @@ function App() {
 
       setRooms((prev) => mergeRoomLists([createdRoom], prev))
       setCreateOpen(false)
-      setPage({ key: 'detail', roomId: createdRoom.id })
+      setPage({ key: 'rooms' })
       setGlobalNotice('Room created successfully.')
       return null
     } catch (error: any) {
@@ -834,40 +832,10 @@ function App() {
     }
   }
 
-  const openPrejoinPreview = (roomId: string, options: JoinRoomOptions) => {
-    setPrejoinRoomId(roomId)
-    setPrejoinOptions(options)
-    setPrejoinLoading(false)
-    setPrejoinError('')
-  }
-
-  const closePrejoinPreview = () => {
-    setPrejoinRoomId(null)
-    setPrejoinOptions(null)
-    setPrejoinLoading(false)
-    setPrejoinError('')
-  }
-
-  const confirmPrejoinPreview = async (settings: PrejoinDeviceSettings) => {
-    if (!prejoinRoomId || !prejoinOptions) return
-    setPrejoinLoading(true)
-    setPrejoinError('')
-    const result = await joinRoom(prejoinRoomId, prejoinOptions)
-    if (result) {
-      setPrejoinError(result)
-      setPrejoinLoading(false)
-      return
-    }
-    setPrejoinSettingsByRoom((prev) => ({
-      ...prev,
-      [prejoinRoomId]: settings,
-    }))
-    closePrejoinPreview()
-  }
-
   const runJoinWithPrejoin = async (
     roomId: string,
     options: JoinRoomOptions,
+    prejoinSettings?: PrejoinDeviceSettings,
   ): Promise<string | null> => {
     const room = rooms.find((item) => item.id === roomId)
     if (!room) return 'Room not found.'
@@ -880,16 +848,69 @@ function App() {
       return getTalkspacesApiError(error)
     }
 
+    const resolvedJoinRole: 'member' | 'listener' = resolvedJoinAsAudience ? 'listener' : 'member'
+    const allowedJoinRoles: Array<'member' | 'listener'> = [resolvedJoinRole]
+
+    if (prejoinSettings) {
+      setPrejoinSettingsByRoom((prev) => ({
+        ...prev,
+        [roomId]: prejoinSettings,
+      }))
+    }
+
     if (window.electronAPI?.openPrejoinWindow) {
       try {
+        const roomCategory = room.categoryName || categoryById.get(room.categoryId)?.name || 'General'
+        const cachedJoinRole = prejoinSettings?.joinRole || prejoinSettingsByRoom[roomId]?.joinRole
+        const initialJoinRole =
+          (cachedJoinRole === 'member' || cachedJoinRole === 'listener') &&
+          allowedJoinRoles.includes(cachedJoinRole)
+            ? cachedJoinRole
+            : resolvedJoinRole
         const prejoinResult = await window.electronAPI.openPrejoinWindow({
-          roomTitle: `${room?.title || 'Room'} - ${profile.name}`,
+          roomTitle: 'TalkSpace Prejoin',
           joinAsAudience: resolvedJoinAsAudience,
-          initialSettings: prejoinSettingsByRoom[roomId],
+          userInfo: {
+            name: profile.name,
+            username: profile.username,
+            avatar: profile.avatar,
+          },
+          allowedJoinRoles,
+          initialSettings: {
+            ...(prejoinSettings || prejoinSettingsByRoom[roomId]),
+            joinRole: initialJoinRole,
+          },
+          roomInfo: {
+            title: room.title,
+            category: roomCategory,
+            status: room.status,
+            hostName: room.hostName,
+            description: room.description || '',
+            participantCount: room.participantCount,
+            maxParticipants: room.maxParticipants,
+            isPrivate: room.isPrivate,
+            audienceEnabled: room.audienceEnabled,
+            scheduleLabel: formatSchedule(room.scheduledAt),
+            roomName: room.roomName || room.id,
+          },
         })
-
         if (!prejoinResult?.confirmed) {
           return null
+        }
+
+        const rawFinalPrejoinSettings = prejoinResult.settings as PrejoinDeviceSettings | undefined
+        const finalPrejoinSettings = rawFinalPrejoinSettings
+          ? {
+              ...rawFinalPrejoinSettings,
+              joinRole: resolvedJoinRole,
+            }
+          : undefined
+
+        if (finalPrejoinSettings) {
+          setPrejoinSettingsByRoom((prev) => ({
+            ...prev,
+            [roomId]: finalPrejoinSettings,
+          }))
         }
 
         if (window.electronAPI?.openConferenceWindow) {
@@ -897,7 +918,7 @@ function App() {
             roomId,
             roomTitle: `${room?.title || 'Room'} - ${profile.name}`,
             joinAsAudience: resolvedJoinAsAudience,
-            prejoinSettings: prejoinResult.settings as PrejoinDeviceSettings | undefined,
+            prejoinSettings: finalPrejoinSettings,
           })
           if (!openConferenceResult?.success) {
             return openConferenceResult?.error || 'Unable to open Meeting window.'
@@ -905,18 +926,29 @@ function App() {
           return null
         }
 
-        const result = await joinRoom(roomId, options)
-        if (result) return result
+        return joinRoom(roomId, {
+          ...options,
+          joinAsAudience: resolvedJoinAsAudience,
+        })
+      } catch (error: any) {
+        return error?.message || 'Unable to open Prejoin window.'
+      }
+    }
 
-        if (prejoinResult.settings) {
-          setPrejoinSettingsByRoom((prev) => ({
-            ...prev,
-            [roomId]: prejoinResult.settings as PrejoinDeviceSettings,
-          }))
+    if (window.electronAPI?.openConferenceWindow) {
+      try {
+        const openConferenceResult = await window.electronAPI.openConferenceWindow({
+          roomId,
+          roomTitle: `${room?.title || 'Room'} - ${profile.name}`,
+          joinAsAudience: resolvedJoinAsAudience,
+          prejoinSettings,
+        })
+        if (!openConferenceResult?.success) {
+          return openConferenceResult?.error || 'Unable to open Meeting window.'
         }
         return null
       } catch (error: any) {
-        return error?.message || 'Unable to open prejoin window.'
+        return error?.message || 'Unable to open Meeting window.'
       }
     }
 
@@ -924,6 +956,17 @@ function App() {
       ...options,
       joinAsAudience: resolvedJoinAsAudience,
     })
+  }
+
+  const openRoomWindow = async (roomId: string) => {
+    const result = await runJoinWithPrejoin(
+      roomId,
+      { joinAsAudience: false },
+      prejoinSettingsByRoom[roomId],
+    )
+    if (result) {
+      setGlobalNotice(result)
+    }
   }
 
   useEffect(() => {
@@ -1013,7 +1056,7 @@ function App() {
     }
 
     void refreshRooms().catch(() => undefined)
-    setPage({ key: 'detail', roomId })
+    setPage({ key: 'rooms' })
   }
 
   const sendChat = (roomId: string, message: string) => {
@@ -1227,22 +1270,6 @@ function App() {
       )
     }
 
-    if (page.key === 'detail' && selectedRoom) {
-      return (
-        <RoomDetailView
-          room={selectedRoom}
-          categoryName={selectedRoom.categoryName || categoryById.get(selectedRoom.categoryId)?.name || 'General'}
-          isFavorite={favoriteRoomIds.has(selectedRoom.id)}
-          canManage={selectedRoom.hostId === profile.id}
-          onJoin={(payload) => runJoinWithPrejoin(selectedRoom.id, payload)}
-          onToggleFavorite={() => toggleFavorite(selectedRoom.id)}
-          onOpenRoom={openSelectedRoom}
-          onCloseRoom={closeSelectedRoom}
-          onDeleteRoom={deleteSelectedRoom}
-        />
-      )
-    }
-
     if (page.key === 'calendar') {
       return (
         <CalendarView
@@ -1254,7 +1281,9 @@ function App() {
           selectedDayEvents={selectedDayEvents}
           onMonthChange={setCalendarMonth}
           onSelectDay={setCalendarSelectedDay}
-          onOpenRoom={(roomId) => setPage({ key: 'detail', roomId })}
+          onOpenRoom={(roomId) => {
+            void openRoomWindow(roomId)
+          }}
         />
       )
     }
@@ -1336,7 +1365,9 @@ function App() {
               setRoomsLoading(false)
             })
         }}
-        onOpenRoom={(roomId) => setPage({ key: 'detail', roomId })}
+        onOpenRoom={(roomId) => {
+          void openRoomWindow(roomId)
+        }}
         onReopenRoom={async (roomId) => {
           try {
             const updated = await openRoomApi(roomId)
@@ -1408,12 +1439,8 @@ function App() {
   }
 
   const pageLabel =
-    page.key === 'detail'
-      ? 'Room Detail'
-      : page.key === 'conference'
-        ? 'Conference'
-        : page.key.charAt(0).toUpperCase() + page.key.slice(1)
-  const isImmersivePage = page.key === 'detail' || page.key === 'conference'
+    page.key === 'conference' ? 'Conference' : page.key.charAt(0).toUpperCase() + page.key.slice(1)
+  const isImmersivePage = page.key === 'conference'
 
   return (
     <div className="main-window-root">
@@ -1514,13 +1541,19 @@ const parseLaunchConferenceFromUrl = (): LaunchConferencePayload | null => {
 
   try {
     const parsed = JSON.parse(rawPrejoin) as Partial<PrejoinDeviceSettings>
+    const normalizedBackgroundMode =
+      parsed.backgroundMode === 'none' ||
+      parsed.backgroundMode === 'blur' ||
+      parsed.backgroundMode === 'nature' ||
+      parsed.backgroundMode === 'office'
+        ? parsed.backgroundMode
+        : parsed.backgroundMode === 'dim'
+          ? 'office'
+        : 'none'
     const prejoinSettings: PrejoinDeviceSettings = {
       micEnabled: Boolean(parsed.micEnabled),
       camEnabled: Boolean(parsed.camEnabled),
-      backgroundMode:
-        parsed.backgroundMode === 'blur' || parsed.backgroundMode === 'dim'
-          ? parsed.backgroundMode
-          : 'none',
+      backgroundMode: normalizedBackgroundMode,
       microphoneDeviceId:
         typeof parsed.microphoneDeviceId === 'string' && parsed.microphoneDeviceId.trim()
           ? parsed.microphoneDeviceId
@@ -1532,6 +1565,13 @@ const parseLaunchConferenceFromUrl = (): LaunchConferencePayload | null => {
       cameraDeviceId:
         typeof parsed.cameraDeviceId === 'string' && parsed.cameraDeviceId.trim()
           ? parsed.cameraDeviceId
+          : undefined,
+      joinRole:
+        parsed.joinRole === 'member' ||
+        parsed.joinRole === 'listener' ||
+        parsed.joinRole === 'host' ||
+        parsed.joinRole === 'co_host'
+          ? parsed.joinRole
           : undefined,
     }
     return {
@@ -1734,7 +1774,7 @@ function RoomsView({
               }}
               type="button"
             >
-              Edit room
+              Open window
             </button>
             {room.status !== 'open' ? (
               <button
@@ -2004,6 +2044,7 @@ function RoomDetailView({
   categoryName,
   isFavorite,
   canManage,
+  initialPrejoinSettings,
   onJoin,
   onToggleFavorite,
   onOpenRoom,
@@ -2014,9 +2055,11 @@ function RoomDetailView({
   categoryName: string
   isFavorite: boolean
   canManage: boolean
+  initialPrejoinSettings?: PrejoinDeviceSettings
   onJoin: (payload: {
     joinAsAudience: boolean
     accessCode?: string
+    prejoinSettings: PrejoinDeviceSettings
   }) => Promise<string | null>
   onToggleFavorite: () => Promise<string | null>
   onOpenRoom: () => Promise<string | null>
@@ -2024,25 +2067,62 @@ function RoomDetailView({
   onDeleteRoom: () => Promise<string | null>
 }) {
   const [prejoinType, setPrejoinType] = useState<'member' | 'audience' | null>(null)
-  const [prejoinLoading, setPrejoinLoading] = useState(false)
+  const [prejoinRoleLoading, setPrejoinRoleLoading] = useState(false)
   const [accessCode, setAccessCode] = useState('')
   const [error, setError] = useState('')
   const [joining, setJoining] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [actionError, setActionError] = useState('')
+  const [micEnabled, setMicEnabled] = useState(initialPrejoinSettings?.micEnabled ?? true)
+  const [camEnabled, setCamEnabled] = useState(initialPrejoinSettings?.camEnabled ?? true)
+  const [backgroundMode, setBackgroundMode] = useState<PrejoinDeviceSettings['backgroundMode']>(
+    initialPrejoinSettings?.backgroundMode ?? 'none',
+  )
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
+  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([])
+  const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([])
+  const [selectedAudioInputId, setSelectedAudioInputId] = useState(
+    initialPrejoinSettings?.microphoneDeviceId ?? '',
+  )
+  const [selectedAudioOutputId, setSelectedAudioOutputId] = useState(
+    initialPrejoinSettings?.speakerDeviceId ?? '',
+  )
+  const [selectedVideoInputId, setSelectedVideoInputId] = useState(initialPrejoinSettings?.cameraDeviceId ?? '')
+  const [previewError, setPreviewError] = useState('')
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+
+  const stopPreview = () => {
+    const stream = streamRef.current
+    if (!stream) return
+    stream.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+    }
+  }
 
   useEffect(() => {
     setPrejoinType(null)
-    setPrejoinLoading(false)
+    setPrejoinRoleLoading(false)
     setAccessCode('')
     setError('')
     setActionError('')
     setJoining(false)
     setActionLoading(false)
-  }, [room.id])
+    setMicEnabled(initialPrejoinSettings?.micEnabled ?? true)
+    setCamEnabled(initialPrejoinSettings?.camEnabled ?? true)
+    setBackgroundMode(initialPrejoinSettings?.backgroundMode ?? 'none')
+    setSelectedAudioInputId(initialPrejoinSettings?.microphoneDeviceId ?? '')
+    setSelectedAudioOutputId(initialPrejoinSettings?.speakerDeviceId ?? '')
+    setSelectedVideoInputId(initialPrejoinSettings?.cameraDeviceId ?? '')
+    setPreviewError('')
+    stopPreview()
+  }, [room.id, initialPrejoinSettings])
+
   useEffect(() => {
     let active = true
-    setPrejoinLoading(true)
+    setPrejoinRoleLoading(true)
     void (async () => {
       try {
         const result = await getPrejoin(room.roomName)
@@ -2053,7 +2133,7 @@ function RoomDetailView({
         setPrejoinType(null)
       } finally {
         if (active) {
-          setPrejoinLoading(false)
+          setPrejoinRoleLoading(false)
         }
       }
     })()
@@ -2061,6 +2141,69 @@ function RoomDetailView({
       active = false
     }
   }, [room.roomName])
+
+  const loadDevices = async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    setAudioInputs(devices.filter((item) => item.kind === 'audioinput'))
+    setAudioOutputs(devices.filter((item) => item.kind === 'audiooutput'))
+    setVideoInputs(devices.filter((item) => item.kind === 'videoinput'))
+  }
+
+  const startPreview = async () => {
+    stopPreview()
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setPreviewError('Media devices are unavailable in this environment.')
+      return
+    }
+    if (!micEnabled && !camEnabled) {
+      setPreviewError('')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: micEnabled
+          ? {
+              deviceId: selectedAudioInputId ? { exact: selectedAudioInputId } : undefined,
+            }
+          : false,
+        video: camEnabled
+          ? {
+              deviceId: selectedVideoInputId ? { exact: selectedVideoInputId } : undefined,
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            }
+          : false,
+      })
+      streamRef.current = stream
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        void videoRef.current.play().catch(() => undefined)
+        if (selectedAudioOutputId && 'setSinkId' in videoRef.current) {
+          try {
+            await (videoRef.current as any).setSinkId(selectedAudioOutputId)
+          } catch {
+            // Ignore unsupported sink routing errors.
+          }
+        }
+      }
+      setPreviewError('')
+      await loadDevices()
+    } catch (e: any) {
+      setPreviewError(e?.message || 'Cannot access microphone/camera.')
+    }
+  }
+
+  useEffect(() => {
+    void loadDevices().catch(() => undefined)
+    return () => stopPreview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    void startPreview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [micEnabled, camEnabled, selectedAudioInputId, selectedAudioOutputId, selectedVideoInputId])
 
   const resolvedJoinAsAudience = prejoinType === 'audience'
   const hideAccessCode = prejoinType === 'member'
@@ -2072,11 +2215,25 @@ function RoomDetailView({
         : 'Auto mode'
   const roomUnavailable = room.status === 'closed'
 
+  useEffect(() => {
+    if (!resolvedJoinAsAudience) return
+    setMicEnabled(false)
+    setCamEnabled(false)
+  }, [resolvedJoinAsAudience])
+
   const handleJoin = async () => {
     setJoining(true)
     const result = await onJoin({
       joinAsAudience: resolvedJoinAsAudience,
       accessCode,
+      prejoinSettings: {
+        micEnabled,
+        camEnabled,
+        backgroundMode,
+        microphoneDeviceId: selectedAudioInputId || undefined,
+        speakerDeviceId: selectedAudioOutputId || undefined,
+        cameraDeviceId: selectedVideoInputId || undefined,
+      },
     })
     setError(result ?? '')
     setJoining(false)
@@ -2124,31 +2281,24 @@ function RoomDetailView({
           {room.description && <p className="detail-description detail-room-description">{room.description}</p>}
         </div>
 
-        <div className="detail-room-meta-grid">
-          <article className="detail-room-meta-card">
-            <label>Host</label>
-            <strong>{room.hostName}</strong>
-          </article>
-          <article className="detail-room-meta-card">
-            <label>Participants</label>
-            <strong>
-              {room.participantCount}
-              {room.maxParticipants > 0 ? ` / ${room.maxParticipants}` : ''}
-            </strong>
-          </article>
-          <article className="detail-room-meta-card">
-            <label>Schedule</label>
-            <strong>{roomScheduleLabel}</strong>
-          </article>
-          <article className="detail-room-meta-card">
-            <label>Room Id</label>
-            <strong>{room.roomName || room.id}</strong>
-          </article>
+        <div className="detail-room-meta-inline">
+          <span>
+            {room.participantCount}
+            {room.maxParticipants > 0 ? ` / ${room.maxParticipants}` : ''} participants
+          </span>
+          <span>{roomScheduleLabel}</span>
         </div>
 
         <div className="detail-join-box detail-join-box-room">
-          <div className="detail-join-head">
-            <h3>Join this room</h3>
+          <div className="prejoin-header prejoin-header-room">
+            <div className="prejoin-header-title">
+              <span className="prejoin-header-icon" aria-hidden>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M4 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1.5l3.5-2v9l-3.5-2V16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z" />
+                </svg>
+              </span>
+              <h3>Prejoin setup</h3>
+            </div>
             <span>{joinModeLabel}</span>
           </div>
           {room.isPrivate && (
@@ -2156,7 +2306,7 @@ function RoomDetailView({
               Private room access is enabled.
             </div>
           )}
-          {prejoinLoading && <div className="notice">Checking join role...</div>}
+          {prejoinRoleLoading && <div className="notice">Checking join role...</div>}
 
           {room.isPrivate && !resolvedJoinAsAudience && !hideAccessCode && (
             <label className="detail-access-code">
@@ -2170,7 +2320,125 @@ function RoomDetailView({
               />
             </label>
           )}
+
+          <div className="prejoin-preview">
+            <video
+              ref={videoRef}
+              className={`prejoin-video prejoin-video-${backgroundMode}`}
+              autoPlay
+              muted
+              playsInline
+            />
+            <div className="prejoin-overlay-controls">
+              <button
+                className={`prejoin-overlay-toggle ${micEnabled ? 'active' : 'off'}`}
+                type="button"
+                onClick={() => setMicEnabled((value) => !value)}
+                disabled={resolvedJoinAsAudience}
+                aria-label={micEnabled ? 'Microphone on' : 'Microphone off'}
+                title={micEnabled ? 'Turn off audio' : 'Turn on audio'}
+              >
+                {micEnabled ? (
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3z" />
+                    <path d="M17 11a5 5 0 0 1-10 0M12 16v4M9 20h6" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3z" />
+                    <path d="M17 11a5 5 0 0 1-3.3 4.7M12 16v4M9 20h6M3 3l18 18" />
+                  </svg>
+                )}
+              </button>
+              <button
+                className={`prejoin-overlay-toggle ${camEnabled ? 'active' : 'off'}`}
+                type="button"
+                onClick={() => setCamEnabled((value) => !value)}
+                disabled={resolvedJoinAsAudience}
+                aria-label={camEnabled ? 'Camera on' : 'Camera off'}
+                title={camEnabled ? 'Turn off video' : 'Turn on video'}
+              >
+                {camEnabled ? (
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1.5l3.5-2v9l-3.5-2V16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1.5l3.5-2v9l-3.5-2V16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8zM3 3l18 18" />
+                  </svg>
+                )}
+              </button>
+            </div>
+            <div className="prejoin-overlay-background">
+              <select
+                className="select"
+                value={backgroundMode}
+                onChange={(event) =>
+                  setBackgroundMode(event.target.value as PrejoinDeviceSettings['backgroundMode'])
+                }
+              >
+                <option value="none">Background: none</option>
+                <option value="blur">Background: blur</option>
+                <option value="nature">Background: nature</option>
+                <option value="office">Background: office</option>
+              </select>
+            </div>
+            {!camEnabled && <div className="prejoin-video-placeholder">Camera is off</div>}
+          </div>
+
+          <div className="prejoin-devices">
+            <label className="prejoin-field">
+              <span>Select microphone</span>
+              <select
+                className="select"
+                value={selectedAudioInputId}
+                onChange={(event) => setSelectedAudioInputId(event.target.value)}
+                disabled={resolvedJoinAsAudience}
+              >
+                <option value="">Default microphone</option>
+                {audioInputs.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Microphone (${device.deviceId.slice(0, 6)})`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="prejoin-field">
+              <span>Select speaker</span>
+              <select
+                className="select"
+                value={selectedAudioOutputId}
+                onChange={(event) => setSelectedAudioOutputId(event.target.value)}
+              >
+                <option value="">Default speaker</option>
+                {audioOutputs.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Speaker (${device.deviceId.slice(0, 6)})`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="prejoin-field">
+              <span>Select camera</span>
+              <select
+                className="select"
+                value={selectedVideoInputId}
+                onChange={(event) => setSelectedVideoInputId(event.target.value)}
+                disabled={resolvedJoinAsAudience}
+              >
+                <option value="">Default camera</option>
+                {videoInputs.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Camera (${device.deviceId.slice(0, 6)})`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
+
+        {resolvedJoinAsAudience && <div className="notice">Audience mode: mic/camera stays off.</div>}
+        {previewError && <div className="warning">{previewError}</div>}
 
         {roomUnavailable ? (
           <div className="warning">This room is closed and can no longer be joined.</div>
@@ -2178,7 +2446,7 @@ function RoomDetailView({
           <button
             className="primary-button detail-join-button detail-join-button-room"
             onClick={() => void handleJoin()}
-            disabled={joining || prejoinLoading}
+            disabled={joining || prejoinRoleLoading}
           >
             {joining ? 'Joining...' : resolvedJoinAsAudience ? 'Join as listener' : 'Join room'}
           </button>
@@ -2198,14 +2466,6 @@ function RoomDetailView({
             {actionError && <div className="error">{actionError}</div>}
           </div>
         )}
-
-        <div className="room-tags detail-room-tags">
-          {room.tags.map((tag) => (
-            <span key={tag} className="tag">
-              #{tag}
-            </span>
-          ))}
-        </div>
       </div>
     </div>
   )
@@ -2406,274 +2666,6 @@ function ConferenceView({
           </aside>
         </>
       )}
-    </div>
-  )
-}
-
-function PrejoinPreviewModal({
-  room,
-  joinAsAudience,
-  loading,
-  error,
-  initialSettings,
-  onCancel,
-  onConfirm,
-}: {
-  room: TalkRoom | null
-  joinAsAudience: boolean
-  loading: boolean
-  error: string
-  initialSettings?: PrejoinDeviceSettings
-  onCancel: () => void
-  onConfirm: (settings: PrejoinDeviceSettings) => void
-}) {
-  const [micEnabled, setMicEnabled] = useState(initialSettings?.micEnabled ?? !joinAsAudience)
-  const [camEnabled, setCamEnabled] = useState(initialSettings?.camEnabled ?? !joinAsAudience)
-  const [backgroundMode, setBackgroundMode] = useState<PrejoinDeviceSettings['backgroundMode']>(
-    initialSettings?.backgroundMode ?? 'none',
-  )
-  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([])
-  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([])
-  const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([])
-  const [selectedAudioInputId, setSelectedAudioInputId] = useState(
-    initialSettings?.microphoneDeviceId ?? '',
-  )
-  const [selectedAudioOutputId, setSelectedAudioOutputId] = useState(
-    initialSettings?.speakerDeviceId ?? '',
-  )
-  const [selectedVideoInputId, setSelectedVideoInputId] = useState(
-    initialSettings?.cameraDeviceId ?? '',
-  )
-  const [previewError, setPreviewError] = useState('')
-  const videoRef = useRef<HTMLVideoElement | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-
-  const stopPreview = () => {
-    const stream = streamRef.current
-    if (!stream) return
-    stream.getTracks().forEach((track) => track.stop())
-    streamRef.current = null
-    if (videoRef.current) {
-      videoRef.current.srcObject = null
-    }
-  }
-
-  const loadDevices = async () => {
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    setAudioInputs(devices.filter((item) => item.kind === 'audioinput'))
-    setAudioOutputs(devices.filter((item) => item.kind === 'audiooutput'))
-    setVideoInputs(devices.filter((item) => item.kind === 'videoinput'))
-  }
-
-  const startPreview = async () => {
-    stopPreview()
-    if (!micEnabled && !camEnabled) return
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: micEnabled
-          ? {
-              deviceId: selectedAudioInputId ? { exact: selectedAudioInputId } : undefined,
-            }
-          : false,
-        video: camEnabled
-          ? {
-              deviceId: selectedVideoInputId ? { exact: selectedVideoInputId } : undefined,
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            }
-          : false,
-      })
-      streamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        void videoRef.current.play().catch(() => undefined)
-        if (selectedAudioOutputId && 'setSinkId' in videoRef.current) {
-          try {
-            await (videoRef.current as any).setSinkId(selectedAudioOutputId)
-          } catch {
-            // ignore unsupported sink routing errors
-          }
-        }
-      }
-      setPreviewError('')
-    } catch (e: any) {
-      setPreviewError(e?.message || 'Cannot access microphone/camera.')
-    }
-  }
-
-  useEffect(() => {
-    void loadDevices().catch(() => undefined)
-    return () => stopPreview()
-  }, [])
-
-  useEffect(() => {
-    void startPreview()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [micEnabled, camEnabled, selectedAudioInputId, selectedAudioOutputId, selectedVideoInputId])
-
-  useEffect(() => {
-    if (!joinAsAudience) return
-    setMicEnabled(false)
-    setCamEnabled(false)
-  }, [joinAsAudience])
-
-  return (
-    <div className="modal-backdrop prejoin-overlay">
-      <div className="modal prejoin-modal">
-        <div className="prejoin-header">
-          <h3>Preview when joining</h3>
-          <button
-            className="ghost-button prejoin-close-icon"
-            onClick={onCancel}
-            type="button"
-            disabled={loading}
-            aria-label="Close preview"
-            title="Close"
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M6 6l12 12M18 6l-12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="prejoin-preview">
-          <video
-            ref={videoRef}
-            className={`prejoin-video prejoin-video-${backgroundMode}`}
-            autoPlay
-            muted
-            playsInline
-          />
-          <div className="prejoin-overlay-controls">
-            <button
-              className={`prejoin-overlay-toggle ${micEnabled ? 'active' : 'off'}`}
-              type="button"
-              onClick={() => setMicEnabled((value) => !value)}
-              disabled={joinAsAudience}
-              aria-label={micEnabled ? 'Microphone on' : 'Microphone off'}
-              title={micEnabled ? 'Turn off audio' : 'Turn on audio'}
-            >
-              {micEnabled ? (
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3z" />
-                  <path d="M17 11a5 5 0 0 1-10 0M12 16v4M9 20h6" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3z" />
-                  <path d="M17 11a5 5 0 0 1-3.3 4.7M12 16v4M9 20h6M3 3l18 18" />
-                </svg>
-              )}
-            </button>
-            <button
-              className={`prejoin-overlay-toggle ${camEnabled ? 'active' : 'off'}`}
-              type="button"
-              onClick={() => setCamEnabled((value) => !value)}
-              disabled={joinAsAudience}
-              aria-label={camEnabled ? 'Camera on' : 'Camera off'}
-              title={camEnabled ? 'Turn off video' : 'Turn on video'}
-            >
-              {camEnabled ? (
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M4 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1.5l3.5-2v9l-3.5-2V16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M4 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1.5l3.5-2v9l-3.5-2V16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8zM3 3l18 18" />
-                </svg>
-              )}
-            </button>
-          </div>
-          <div className="prejoin-overlay-background">
-            <select
-              className="select"
-              value={backgroundMode}
-              onChange={(event) =>
-                setBackgroundMode(event.target.value as PrejoinDeviceSettings['backgroundMode'])
-              }
-            >
-              <option value="none">Background: none</option>
-              <option value="blur">Background: blur</option>
-              <option value="dim">Background: dim</option>
-            </select>
-          </div>
-          {!camEnabled && <div className="prejoin-video-placeholder">Camera is off</div>}
-        </div>
-
-        <div className="prejoin-devices">
-          <label className="prejoin-field">
-            <span>Select microphone</span>
-            <select
-              className="select"
-              value={selectedAudioInputId}
-              onChange={(event) => setSelectedAudioInputId(event.target.value)}
-              disabled={joinAsAudience}
-            >
-              <option value="">Default microphone</option>
-              {audioInputs.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label || `Microphone (${device.deviceId.slice(0, 6)})`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="prejoin-field">
-            <span>Select speaker</span>
-            <select
-              className="select"
-              value={selectedAudioOutputId}
-              onChange={(event) => setSelectedAudioOutputId(event.target.value)}
-            >
-              <option value="">Default speaker</option>
-              {audioOutputs.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label || `Speaker (${device.deviceId.slice(0, 6)})`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="prejoin-field">
-            <span>Select camera</span>
-            <select
-              className="select"
-              value={selectedVideoInputId}
-              onChange={(event) => setSelectedVideoInputId(event.target.value)}
-              disabled={joinAsAudience}
-            >
-              <option value="">Default camera</option>
-              {videoInputs.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label || `Camera (${device.deviceId.slice(0, 6)})`}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        {joinAsAudience && <div className="notice">Audience mode: mic/camera stays off.</div>}
-        {previewError && <div className="warning">{previewError}</div>}
-        {error && <div className="error">{error}</div>}
-
-        <div className="modal-actions prejoin-actions">
-          <button
-            className="primary-button"
-            type="button"
-            onClick={() =>
-              onConfirm({
-                micEnabled,
-                camEnabled,
-                backgroundMode,
-                microphoneDeviceId: selectedAudioInputId || undefined,
-                speakerDeviceId: selectedAudioOutputId || undefined,
-                cameraDeviceId: selectedVideoInputId || undefined,
-              })
-            }
-            disabled={loading}
-          >
-            {loading ? 'Joining...' : 'Start'}
-          </button>
-        </div>
-      </div>
     </div>
   )
 }
@@ -3165,4 +3157,3 @@ function CreateRoomModal({
 }
 
 export default App
-
