@@ -72,6 +72,7 @@ const conferenceWindows = new Set()
 let pendingExternalOauth = null
 let bufferedHandoffToken = null
 const conferenceShareModeState = new Map()
+const miniModeRestoreState = new Map()
 const DEFAULT_CONFERENCE_MIN_SIZE = [250, 250]
 const DEFAULT_SHARE_MODE_HEIGHT = 720
 
@@ -1045,6 +1046,29 @@ app.whenReady().then(() => {
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
     if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
 
+    if (!miniModeRestoreState.has(senderWindow.id)) {
+      const normalBounds =
+        senderWindow.isMaximized() || senderWindow.isFullScreen()
+          ? senderWindow.getNormalBounds()
+          : senderWindow.getBounds()
+      miniModeRestoreState.set(senderWindow.id, {
+        bounds: normalBounds,
+        minSize: senderWindow.getMinimumSize(),
+        maxSize: senderWindow.getMaximumSize(),
+        isResizable: senderWindow.isResizable(),
+        wasAlwaysOnTop: senderWindow.isAlwaysOnTop(),
+        wasMaximized: senderWindow.isMaximized(),
+        wasFullScreen: senderWindow.isFullScreen(),
+      })
+    }
+
+    if (senderWindow.isFullScreen()) {
+      senderWindow.setFullScreen(false)
+    }
+    if (senderWindow.isMaximized()) {
+      senderWindow.unmaximize()
+    }
+
     const miniWidth = 250
     const miniMinHeight = 620
 
@@ -1134,21 +1158,33 @@ app.whenReady().then(() => {
     return { success: true }
   })
 
-  ipcMain.handle('window:exit-mini-mode', (event) => {
+  ipcMain.handle('window:expand-height-max', (event) => {
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
-    if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
+    if (!senderWindow || senderWindow.isDestroyed()) return { success: false, error: 'Window not found.' }
 
-    const display = screen.getDisplayMatching(senderWindow.getBounds())
+    if (senderWindow.isFullScreen()) {
+      return { success: true, skipped: 'fullscreen' }
+    }
+    if (senderWindow.isMinimized()) {
+      senderWindow.restore()
+    }
+
+    if (senderWindow.isMaximized()) {
+      return { success: true, skipped: 'maximized' }
+    }
+
+    const currentBounds = senderWindow.getBounds()
+    const display = screen.getDisplayMatching(currentBounds)
     const workArea = display.workArea
-    const targetWidth = Math.min(Math.max(420, Math.floor(workArea.width * 0.28)), workArea.width - 16)
-    const targetHeight = workArea.height
-    const targetX = workArea.x + workArea.width - targetWidth
-    const targetY = workArea.y
+    const verticalPadding = 8
+    const horizontalPadding = 8
+    const maxAllowedWidth = Math.max(240, workArea.width - horizontalPadding * 2)
+    const targetWidth = Math.min(currentBounds.width, maxAllowedWidth)
+    const targetHeight = Math.max(200, workArea.height - verticalPadding * 2)
+    const maxX = workArea.x + workArea.width - targetWidth - horizontalPadding
+    const targetX = Math.max(workArea.x + horizontalPadding, Math.min(currentBounds.x, maxX))
+    const targetY = workArea.y + verticalPadding
 
-    senderWindow.setResizable(true)
-    senderWindow.setAlwaysOnTop(false)
-    senderWindow.setMinimumSize(DEFAULT_CONFERENCE_MIN_SIZE[0], DEFAULT_CONFERENCE_MIN_SIZE[1])
-    senderWindow.setMaximumSize(0, 0)
     senderWindow.setBounds(
       {
         x: targetX,
@@ -1158,8 +1194,44 @@ app.whenReady().then(() => {
       },
       true,
     )
-
     return { success: true }
+  })
+
+  ipcMain.handle('window:exit-mini-mode', (event) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
+
+    miniDrawerExpandState.delete(senderWindow.id)
+
+    const savedState = miniModeRestoreState.get(senderWindow.id)
+    miniModeRestoreState.delete(senderWindow.id)
+
+    if (savedState) {
+      const { bounds, minSize, maxSize, isResizable, wasAlwaysOnTop, wasMaximized, wasFullScreen } = savedState
+      senderWindow.setAlwaysOnTop(Boolean(wasAlwaysOnTop))
+      senderWindow.setResizable(Boolean(isResizable))
+      senderWindow.setMinimumSize(
+        Number.isFinite(minSize?.[0]) ? minSize[0] : DEFAULT_CONFERENCE_MIN_SIZE[0],
+        Number.isFinite(minSize?.[1]) ? minSize[1] : DEFAULT_CONFERENCE_MIN_SIZE[1],
+      )
+      senderWindow.setMaximumSize(
+        Number.isFinite(maxSize?.[0]) ? maxSize[0] : 0,
+        Number.isFinite(maxSize?.[1]) ? maxSize[1] : 0,
+      )
+
+      if (wasFullScreen) {
+        senderWindow.setFullScreen(true)
+      } else if (wasMaximized) {
+        senderWindow.setBounds(bounds, true)
+        senderWindow.maximize()
+      } else if (bounds) {
+        senderWindow.setBounds(bounds, true)
+      }
+
+      return { success: true, restored: true }
+    }
+
+    return { success: true, restored: false }
   })
 
   ipcMain.handle('window:maximize-current', (event) => {

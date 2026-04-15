@@ -739,6 +739,7 @@ function DesktopConference({
 }) {
   const MINI_CAROUSEL_BREAKPOINT = 260
   const MINI_CAROUSEL_GAP = 8
+  const DESKTOP_CAROUSEL_GAP = 8
   const [widgetState, setWidgetState] = useState<WidgetState>({
     showChat: false,
     unreadMessages: 0,
@@ -748,6 +749,9 @@ function DesktopConference({
   const [miniCarouselOverflow, setMiniCarouselOverflow] = useState(false)
   const [miniCarouselCanPrev, setMiniCarouselCanPrev] = useState(false)
   const [miniCarouselCanNext, setMiniCarouselCanNext] = useState(false)
+  const [desktopCarouselOverflow, setDesktopCarouselOverflow] = useState(false)
+  const [desktopCarouselCanPrev, setDesktopCarouselCanPrev] = useState(false)
+  const [desktopCarouselCanNext, setDesktopCarouselCanNext] = useState(false)
   const conferenceRef = useRef<HTMLDivElement | null>(null)
   const layoutContext = useCreateLayoutContext()
   const { reactions, sendReaction } = useReactions()
@@ -864,6 +868,7 @@ function DesktopConference({
     [prioritizedScreenShareTracks],
   )
   const [autoFocusedTrackSid, setAutoFocusedTrackSid] = useState<string | null>(null)
+  const hadFocusTrackRef = useRef(Boolean(focusTrack))
 
   useEffect(() => {
     const onResize = () => {
@@ -874,6 +879,17 @@ function DesktopConference({
       window.removeEventListener('resize', onResize)
     }
   }, [MINI_CAROUSEL_BREAKPOINT])
+
+  useEffect(() => {
+    const hadFocus = hadFocusTrackRef.current
+    const hasFocus = Boolean(focusTrack)
+
+    if (!hadFocus && hasFocus && window.innerWidth > 400) {
+      ;(window as any).electronAPI?.expandCurrentWindowHeight?.()
+    }
+
+    hadFocusTrackRef.current = hasFocus
+  }, [focusTrack])
 
   // Auto-expand the window when the drawer opens in mini/small mode,
   // and restore mini size when the drawer closes.
@@ -961,6 +977,17 @@ function DesktopConference({
 
   const carouselTracks = tracks.filter((track) => !isSameTrackRef(track, focusTrack))
   const canNavigateMiniCarousel = isMiniWidth && miniCarouselOverflow
+  const canNavigateDesktopCarousel = !isMiniWidth && desktopCarouselOverflow
+  const isScreenShareFocused =
+    !!focusTrack &&
+    isTrackReference(focusTrack) &&
+    focusTrack.publication.source === Track.Source.ScreenShare
+  const focusLayoutWrapperClassName = `lk-focus-layout-wrapper${
+    isScreenShareFocused ? ' desktop-vc-focus-layout--screenshare' : ''
+  }`
+  const carouselRegionClassName = `desktop-vc-carousel-region${
+    !isMiniWidth && !desktopCarouselOverflow ? ' desktop-vc-carousel-region--centered' : ''
+  }`
 
   const updateMiniCarouselNavigationState = useCallback(() => {
     if (!isMiniWidth) {
@@ -996,6 +1023,42 @@ function DesktopConference({
     setMiniCarouselOverflow(overflow)
     setMiniCarouselCanPrev(canPrev)
     setMiniCarouselCanNext(canNext)
+  }, [isMiniWidth])
+
+  const updateDesktopCarouselNavigationState = useCallback(() => {
+    if (isMiniWidth) {
+      setDesktopCarouselOverflow(false)
+      setDesktopCarouselCanPrev(false)
+      setDesktopCarouselCanNext(false)
+      return
+    }
+
+    const root = conferenceRef.current
+    if (!root) {
+      setDesktopCarouselOverflow(false)
+      setDesktopCarouselCanPrev(false)
+      setDesktopCarouselCanNext(false)
+      return
+    }
+
+    const carousel = root.querySelector<HTMLElement>(
+      ".lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='horizontal']",
+    )
+    if (!carousel) {
+      setDesktopCarouselOverflow(false)
+      setDesktopCarouselCanPrev(false)
+      setDesktopCarouselCanNext(false)
+      return
+    }
+
+    const epsilon = 1
+    const overflow = carousel.scrollWidth - carousel.clientWidth > epsilon
+    const canPrev = overflow && carousel.scrollLeft > epsilon
+    const canNext = overflow && carousel.scrollLeft + carousel.clientWidth < carousel.scrollWidth - epsilon
+
+    setDesktopCarouselOverflow(overflow)
+    setDesktopCarouselCanPrev(canPrev)
+    setDesktopCarouselCanNext(canNext)
   }, [isMiniWidth])
 
   useEffect(() => {
@@ -1042,6 +1105,61 @@ function DesktopConference({
     }
   }, [carouselTracks.length, focusTrack, isMiniWidth, updateMiniCarouselNavigationState])
 
+  useEffect(() => {
+    if (isMiniWidth) {
+      setDesktopCarouselOverflow(false)
+      setDesktopCarouselCanPrev(false)
+      setDesktopCarouselCanNext(false)
+      return
+    }
+
+    const root = conferenceRef.current
+    if (!root) return
+
+    const carousel = root.querySelector<HTMLElement>(
+      ".lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='horizontal']",
+    )
+    if (!carousel) {
+      updateDesktopCarouselNavigationState()
+      return
+    }
+
+    const onScroll = () => updateDesktopCarouselNavigationState()
+    const onResize = () => updateDesktopCarouselNavigationState()
+    const onWheel = (event: WheelEvent) => {
+      if (carousel.scrollWidth - carousel.clientWidth <= 1) return
+      const primaryDelta =
+        Math.abs(event.deltaY) > Math.abs(event.deltaX) ? event.deltaY : event.deltaX
+      if (Math.abs(primaryDelta) < 0.5) return
+      event.preventDefault()
+      carousel.scrollBy({ left: primaryDelta, behavior: 'auto' })
+      updateDesktopCarouselNavigationState()
+    }
+
+    carousel.addEventListener('scroll', onScroll, { passive: true })
+    carousel.addEventListener('wheel', onWheel, { passive: false })
+    window.addEventListener('resize', onResize)
+
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => updateDesktopCarouselNavigationState())
+        : null
+    resizeObserver?.observe(carousel)
+
+    const mutationObserver = new MutationObserver(() => updateDesktopCarouselNavigationState())
+    mutationObserver.observe(carousel, { childList: true })
+
+    updateDesktopCarouselNavigationState()
+
+    return () => {
+      carousel.removeEventListener('scroll', onScroll)
+      carousel.removeEventListener('wheel', onWheel)
+      window.removeEventListener('resize', onResize)
+      resizeObserver?.disconnect()
+      mutationObserver.disconnect()
+    }
+  }, [carouselTracks.length, focusTrack, isMiniWidth, updateDesktopCarouselNavigationState])
+
   const scrollMiniCarousel = useCallback((direction: 'prev' | 'next') => {
     if (!canNavigateMiniCarousel) return
     const root = conferenceRef.current
@@ -1061,6 +1179,27 @@ function DesktopConference({
       behavior: 'smooth',
     })
   }, [canNavigateMiniCarousel])
+  const scrollDesktopCarousel = useCallback((direction: 'prev' | 'next') => {
+    if (!canNavigateDesktopCarousel) return
+    const root = conferenceRef.current
+    if (!root) return
+    const carousel = root.querySelector<HTMLElement>(
+      ".lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='horizontal']",
+    )
+    if (!carousel) return
+
+    const firstTile = carousel.querySelector<HTMLElement>('.lk-participant-tile')
+    const tileWidth = firstTile?.getBoundingClientRect().width || carousel.clientWidth
+    const computedStyle = window.getComputedStyle(carousel)
+    const gap =
+      Number.parseFloat(computedStyle.columnGap || computedStyle.gap || '0') ||
+      DESKTOP_CAROUSEL_GAP
+    const scrollStep = Math.max(60, tileWidth + gap)
+    carousel.scrollBy({
+      left: direction === 'next' ? scrollStep : -scrollStep,
+      behavior: 'smooth',
+    })
+  }, [canNavigateDesktopCarousel])
   const chatDrawerClassName = `desktop-vc-drawer desktop-vc-drawer--chat${
     widgetState.showChat ? ' desktop-vc-drawer--open' : ''
   }`
@@ -1080,12 +1219,50 @@ function DesktopConference({
               </GridLayout>
             </div>
           ) : (
-            <div className="lk-focus-layout-wrapper">
+            <div className={focusLayoutWrapperClassName}>
               <FocusLayoutContainer>
-                <div className="desktop-vc-carousel-region">
+                <div className={carouselRegionClassName}>
                   <CarouselLayout tracks={carouselTracks} orientation={isMiniWidth ? 'vertical' : 'horizontal'}>
                     <AvatarParticipantTile resolveParticipantAvatar={resolveParticipantAvatar} />
                   </CarouselLayout>
+                  {canNavigateDesktopCarousel ? (
+                    <div className="desktop-vc-carousel-nav">
+                      <button
+                        className="desktop-vc-carousel-nav__btn"
+                        disabled={!desktopCarouselCanPrev}
+                        onClick={() => scrollDesktopCarousel('prev')}
+                        type="button"
+                      >
+                        <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14">
+                          <path
+                            d="M9.8 3.6 5.4 8l4.4 4.4"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        className="desktop-vc-carousel-nav__btn"
+                        disabled={!desktopCarouselCanNext}
+                        onClick={() => scrollDesktopCarousel('next')}
+                        type="button"
+                      >
+                        <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14">
+                          <path
+                            d="m6.2 3.6 4.4 4.4-4.4 4.4"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  ) : null}
                   {canNavigateMiniCarousel ? (
                     <div className="desktop-vc-mini-carousel-nav">
                       <button
@@ -1367,7 +1544,7 @@ export default function LiveVideoStage(props: Props) {
           --desktop-vc-control-bar-pad-x: 18px;
           --desktop-vc-control-bar-gap-size: 10px;
           --desktop-vc-control-button-size: 46px;
-          --desktop-vc-focus-stage-top-gap: 12px;
+          --desktop-vc-focus-stage-top-gap: 8px;
           --desktop-vc-carousel-inline-inset: 10px;
           --desktop-vc-carousel-top-padding: 4px;
           --desktop-vc-carousel-bottom-padding: 8px;
@@ -1636,7 +1813,7 @@ export default function LiveVideoStage(props: Props) {
             --desktop-vc-control-bar-pad-x: 8px;
             --desktop-vc-control-bar-gap-size: 4px;
             --desktop-vc-control-button-size: 32px;
-            --desktop-vc-focus-stage-top-gap: 4px;
+            --desktop-vc-focus-stage-top-gap: 6px;
             --desktop-vc-carousel-inline-inset: 8px;
             --desktop-vc-carousel-top-padding: 4px;
             --desktop-vc-carousel-bottom-padding: 6px;
@@ -1694,28 +1871,116 @@ export default function LiveVideoStage(props: Props) {
         .desktop-vc-shell .lk-focus-layout-wrapper {
           height: calc(100% - var(--desktop-vc-control-bar-height) - var(--desktop-vc-control-gap)) !important;
         }
+        .desktop-vc-shell .lk-grid-layout-wrapper {
+          box-sizing: border-box;
+          padding-top: var(--desktop-vc-focus-stage-top-gap);
+          padding-bottom: var(--desktop-vc-carousel-bottom-padding);
+        }
         .desktop-vc-shell .lk-focus-layout-wrapper {
           box-sizing: border-box;
           padding-top: var(--desktop-vc-focus-stage-top-gap);
+          padding-bottom: var(--desktop-vc-carousel-bottom-padding);
         }
         .desktop-vc-shell .lk-focus-layout {
-          grid-template-columns: minmax(0, 1fr);
-          grid-template-rows: minmax(0, 1fr) auto;
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+          grid-template-rows: minmax(0, 1fr);
           align-items: stretch;
+          gap: var(--desktop-vc-carousel-bottom-padding);
         }
         .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage {
           order: 1;
+          grid-column: 2;
+          grid-row: 1;
           min-height: 0;
         }
         .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region {
           order: 2;
+          grid-column: 1;
+          grid-row: 1;
           position: relative;
           box-sizing: border-box;
-          width: calc(100% - var(--desktop-vc-carousel-inline-inset) * 2);
-          margin-inline: var(--desktop-vc-carousel-inline-inset);
+          width: 100%;
+          margin-inline: 0;
           padding-top: var(--desktop-vc-carousel-top-padding);
           padding-bottom: var(--desktop-vc-carousel-bottom-padding);
           min-height: 0;
+        }
+        .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='horizontal'] {
+          overflow-x: auto;
+          overflow-y: hidden;
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+          justify-content: center;
+        }
+        .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='horizontal']::-webkit-scrollbar {
+          width: 0;
+          height: 0;
+          display: none;
+        }
+        .desktop-vc-shell .desktop-vc-carousel-region--centered > .lk-carousel[data-lk-orientation='horizontal'] {
+          justify-content: center;
+        }
+        .desktop-vc-shell .desktop-vc-carousel-nav {
+          position: absolute;
+          inset: 0;
+          z-index: 4;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0 6px;
+          pointer-events: none;
+        }
+        .desktop-vc-shell .desktop-vc-carousel-nav__btn {
+          width: 28px;
+          height: 28px;
+          border-radius: 9px;
+          border: 1px solid rgba(118, 144, 160, 0.28);
+          background: rgba(8, 12, 16, 0.72);
+          color: #e5eef8;
+          line-height: 1;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          pointer-events: auto;
+        }
+        .desktop-vc-shell .desktop-vc-carousel-nav__btn:hover {
+          border-color: rgba(126, 205, 196, 0.42);
+          background: rgba(14, 19, 26, 0.9);
+        }
+        .desktop-vc-shell .desktop-vc-carousel-nav__btn:disabled {
+          opacity: 0.35;
+          cursor: default;
+        }
+        .desktop-vc-shell .desktop-vc-carousel-nav__btn:disabled:hover {
+          border-color: rgba(118, 144, 160, 0.28);
+          background: rgba(8, 12, 16, 0.72);
+        }
+        .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+        .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout > .desktop-vc-carousel-region {
+          grid-column: 1;
+          grid-row: 1;
+        }
+        .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout > .desktop-vc-focus-stage {
+          grid-column: 1;
+          grid-row: 2;
+        }
+        @media (min-width: 1100px) and (min-aspect-ratio: 7/4) {
+          .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout {
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            grid-template-rows: minmax(0, 1fr);
+          }
+          .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout > .desktop-vc-carousel-region {
+            grid-column: 1;
+            grid-row: 1;
+          }
+          .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout > .desktop-vc-focus-stage {
+            grid-column: 2;
+            grid-row: 1;
+          }
         }
         .desktop-vc-shell .desktop-vc-focus-stage,
         .desktop-vc-shell .desktop-vc-focus-stage > .lk-participant-tile {
@@ -1737,11 +2002,14 @@ export default function LiveVideoStage(props: Props) {
             aspect-ratio: 1 / 1;
           }
           .desktop-vc-shell .lk-focus-layout {
+            grid-template-columns: minmax(0, 1fr);
             grid-template-rows: auto minmax(0, 1fr);
             align-content: stretch;
-            gap: 8px;
+            gap: var(--desktop-vc-carousel-bottom-padding);
           }
           .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage {
+            grid-column: auto;
+            grid-row: auto;
             height: auto;
             aspect-ratio: 1 / 1;
           }
@@ -1750,15 +2018,25 @@ export default function LiveVideoStage(props: Props) {
           }
           .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region,
           .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel {
+            grid-column: auto;
+            grid-row: auto;
             height: 100%;
             min-height: 0;
             max-height: none;
+          }
+          .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout > .desktop-vc-focus-stage {
+            grid-column: 1;
+            grid-row: 1;
+          }
+          .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout > .desktop-vc-carousel-region {
+            grid-column: 1;
+            grid-row: 2;
           }
         }
         @media (max-width: 260px) {
           .desktop-vc-shell {
             --desktop-vc-fixed-focus-stage-size: 230px;
-            --desktop-vc-focus-stage-top-gap: 15px;
+            --desktop-vc-focus-stage-top-gap: 6px;
             --desktop-vc-control-bar-height: 52px;
             --desktop-vc-control-bar-pad-y: 5px;
             --desktop-vc-control-bar-pad-x: 6px;
@@ -1880,7 +2158,15 @@ export default function LiveVideoStage(props: Props) {
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
         }
         .desktop-vc-shell .lk-carousel > * {
-          min-width: 150px;
+          min-width: 0;
+          aspect-ratio: 1 / 1;
+        }
+        .desktop-vc-shell .lk-carousel[data-lk-orientation='horizontal'] > * {
+          width: calc(
+            (100% - var(--lk-grid-gap) * (var(--lk-max-visible-tiles, 2) - 1)) /
+            var(--lk-max-visible-tiles, 2)
+          );
+          max-width: 100%;
         }
         .desktop-vc-shell .lk-participant-tile {
           border-radius: 20px;

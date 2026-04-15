@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exitMiniMode: () => ipcRenderer.invoke('window:exit-mini-mode'),
   expandForDrawer: () => ipcRenderer.invoke('window:expand-for-drawer'),
   collapseFromDrawer: () => ipcRenderer.invoke('window:collapse-from-drawer'),
+  expandCurrentWindowHeight: () => ipcRenderer.invoke('window:expand-height-max'),
   maximizeCurrentWindow: () => ipcRenderer.invoke('window:maximize-current'),
   toggleFullscreenCurrentWindow: () => ipcRenderer.invoke('window:toggle-fullscreen'),
   isMaximizedCurrentWindow: () => ipcRenderer.invoke('window:is-maximized'),
