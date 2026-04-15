@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CarouselLayout,
   Chat,
+  ChatIcon,
   ChatToggle,
   ConnectionStateToast,
   DisconnectButton,
@@ -25,13 +26,17 @@ import {
   useLocalParticipant,
   useMaybeLayoutContext,
   useMaybeTrackRefContext,
+  useParticipants,
   usePinnedTracks,
   useTracks,
 } from '@livekit/components-react'
-import { ConnectionState, Participant, Track } from 'livekit-client'
+import { ConnectionState, LocalTrackPublication, Participant, Track } from 'livekit-client'
+import { BackgroundProcessor, supportsBackgroundProcessors, type BackgroundProcessorWrapper } from '@livekit/track-processors'
+import { apiClient, getApiErrorMessage } from '../services/http'
 
 // ─── Action drop — compatible with talkspaces.action.v1 ──────────────────────
 const ACTION_DROP_TOPIC = 'talkspaces.action.v1'
+const ROOM_CHAT_TOPIC = 'talkspaces.chat.v1'
 const ACTION_THROTTLE_MS = 700
 
 type RoomActionKind = 'flower' | 'icon' | 'team_badge'
@@ -347,14 +352,186 @@ function ReactionsBar({
   )
 }
 
-function SettingsPanel() {
+function SettingsPanel({
+  roomId,
+  isHost,
+  audience,
+  onPendingRequestCountChange,
+}: {
+  roomId?: string
+  isHost: boolean
+  audience: boolean
+  onPendingRequestCountChange?: (count: number) => void
+}) {
+  // ── Background ────────────────────────────────────────────────────────────
+  const { cameraTrack } = useLocalParticipant()
+  type BgMode = 'none' | 'blur' | 'office' | 'nature'
+  const [bgMode, setBgMode] = useState<BgMode>('none')
+  const processorRef = useRef<BackgroundProcessorWrapper | null>(null)
+  const bgSupported = useMemo(() => supportsBackgroundProcessors(), [])
+
+  const bgImages = {
+    office: './backgrounds/bg-office.jpg',
+    nature: './backgrounds/bg-nature.jpg',
+  } as const
+
+  useEffect(() => {
+    const track = (cameraTrack as LocalTrackPublication | undefined)?.track
+    if (!track || !bgSupported) return
+    if (bgMode === 'none') {
+      if (processorRef.current) {
+        track.stopProcessor().catch(console.warn)
+        processorRef.current = null
+      }
+      return
+    }
+    const config =
+      bgMode === 'blur'
+        ? ({ mode: 'background-blur', blurRadius: 10 } as const)
+        : ({ mode: 'virtual-background', imagePath: bgImages[bgMode] } as const)
+    if (processorRef.current) {
+      processorRef.current.switchTo(config).catch(console.warn)
+    } else {
+      const p = BackgroundProcessor(config)
+      track.setProcessor(p).catch(console.warn)
+      processorRef.current = p
+    }
+  }, [bgMode, cameraTrack, bgSupported, bgImages])
+
+  // ── Kick participants ──────────────────────────────────────────────────────
+  const participants = useParticipants()
+  const { localParticipant: localP } = useLocalParticipant()
+  const [kickingId, setKickingId] = useState<string | null>(null)
+  const [kickError, setKickError] = useState('')
+
+  const handleKick = useCallback(async (identity: string, name: string) => {
+    if (!roomId || kickingId) return
+    const confirmed = window.confirm(`Remove "${name}" from the room?`)
+    if (!confirmed) return
+    setKickingId(identity)
+    setKickError('')
+    try {
+      await apiClient.post(`api/v1/rooms/${roomId}/kick/${identity}`)
+    } catch (err) {
+      setKickError(getApiErrorMessage(err as any) || 'Failed to remove participant.')
+    } finally {
+      setKickingId(null)
+    }
+  }, [roomId, kickingId])
+
+  // ── Speaker requests ───────────────────────────────────────────────────────
+  type SpeakerReq = {
+    id: string
+    message?: string
+    createdAt?: string
+    user: { id: string; name?: string; username?: string; avatar?: string }
+  }
+  const [pendingRequests, setPendingRequests] = useState<SpeakerReq[]>([])
+  const [approvingId, setApprovingId] = useState<string | null>(null)
+  const [rejectingId, setRejectingId] = useState<string | null>(null)
+  const [expandedReqId, setExpandedReqId] = useState<string | null>(null)
+  const [myRequest, setMyRequest] = useState<SpeakerReq | null>(null)
+  const [requestMsg, setRequestMsg] = useState('')
+  const [requestSubmitting, setRequestSubmitting] = useState(false)
+  const [requestCanceling, setRequestCanceling] = useState(false)
+  const [speakerError, setSpeakerError] = useState('')
+
+  // Poll pending requests (host only)
+  useEffect(() => {
+    if (!isHost || !roomId) return
+    const fetch = async () => {
+      try {
+        const res = await apiClient.get(`api/v1/rooms/${roomId}/speaker-requests`)
+        const list = (res.data?.data as SpeakerReq[] | undefined) ?? []
+        setPendingRequests(list)
+      } catch {
+        // silently ignore polling errors
+      }
+    }
+    fetch()
+    const timer = setInterval(fetch, 5000)
+    return () => clearInterval(timer)
+  }, [isHost, roomId])
+
+  useEffect(() => {
+    onPendingRequestCountChange?.(isHost && roomId ? pendingRequests.length : 0)
+  }, [isHost, onPendingRequestCountChange, pendingRequests.length, roomId])
+
+  const handleApprove = useCallback(async (req: SpeakerReq) => {
+    if (!roomId || approvingId) return
+    setApprovingId(req.id)
+    setSpeakerError('')
+    try {
+      await apiClient.post(`api/v1/rooms/${roomId}/speaker-requests/${req.id}/approve`)
+      setPendingRequests((prev) => prev.filter((r) => r.id !== req.id))
+    } catch (err) {
+      setSpeakerError(getApiErrorMessage(err as any) || 'Failed to approve.')
+    } finally {
+      setApprovingId(null)
+    }
+  }, [roomId, approvingId])
+
+  const handleReject = useCallback(async (req: SpeakerReq) => {
+    if (!roomId || rejectingId) return
+    setRejectingId(req.id)
+    setSpeakerError('')
+    try {
+      await apiClient.post(`api/v1/rooms/${roomId}/speaker-requests/${req.id}/reject`)
+      setPendingRequests((prev) => prev.filter((r) => r.id !== req.id))
+    } catch (err) {
+      setSpeakerError(getApiErrorMessage(err as any) || 'Failed to reject.')
+    } finally {
+      setRejectingId(null)
+    }
+  }, [roomId, rejectingId])
+
+  const handleRequestSpeak = useCallback(async () => {
+    if (!roomId || requestSubmitting || myRequest) return
+    setRequestSubmitting(true)
+    setSpeakerError('')
+    try {
+      const res = await apiClient.post(`api/v1/rooms/${roomId}/speaker-requests`, {
+        message: requestMsg.trim() || undefined,
+      })
+      const created = (res.data?.data as SpeakerReq | undefined) ?? { id: `local-${Date.now()}`, user: { id: '' } }
+      setMyRequest(created)
+      setRequestMsg('')
+    } catch (err) {
+      setSpeakerError(getApiErrorMessage(err as any) || 'Could not send request.')
+    } finally {
+      setRequestSubmitting(false)
+    }
+  }, [roomId, requestSubmitting, myRequest, requestMsg])
+
+  const handleCancelRequest = useCallback(async () => {
+    if (!roomId || !myRequest || requestCanceling) return
+    setRequestCanceling(true)
+    setSpeakerError('')
+    try {
+      if (!myRequest.id.startsWith('local-')) {
+        await apiClient.post(`api/v1/rooms/${roomId}/speaker-requests/${myRequest.id}/cancel`)
+      }
+      setMyRequest(null)
+      setRequestMsg('')
+    } catch (err) {
+      setSpeakerError(getApiErrorMessage(err as any) || 'Could not cancel request.')
+    } finally {
+      setRequestCanceling(false)
+    }
+  }, [roomId, myRequest, requestCanceling])
+
+  const remoteParticipants = participants.filter((p) => p.identity !== localP?.identity)
+
   return (
     <div className="desktop-vc-settings">
       <div className="desktop-vc-settings__header">
-        <strong>Device settings</strong>
-        <span>Choose microphone, camera, and speaker</span>
+        <strong>Settings</strong>
+        <span>Devices, background and more</span>
       </div>
       <div className="desktop-vc-settings__body">
+
+        {/* Devices */}
+        <div className="desktop-vc-settings__group-label">Devices</div>
         <section className="desktop-vc-settings__section">
           <label>Microphone</label>
           <MediaDeviceMenu kind="audioinput" />
@@ -367,6 +544,169 @@ function SettingsPanel() {
           <label>Speaker</label>
           <MediaDeviceMenu kind="audiooutput" />
         </section>
+
+        {/* Background */}
+        {bgSupported && (
+          <>
+            <div className="desktop-vc-settings__group-label">Background</div>
+            <div className="desktop-vc-settings__bg-row">
+              {([
+                { id: 'none',   label: 'None',  thumb: null },
+                { id: 'blur',   label: 'Blur',  thumb: null },
+                { id: 'office', label: 'Office', thumb: bgImages.office },
+                { id: 'nature', label: 'Nature', thumb: bgImages.nature },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className={`desktop-vc-settings__bg-btn${bgMode === opt.id ? ' is-active' : ''}`}
+                  onClick={() => setBgMode(opt.id)}
+                >
+                  <span className="desktop-vc-settings__bg-btn-thumb">
+                    {opt.thumb ? (
+                      <img src={opt.thumb} alt={opt.label} />
+                    ) : opt.id === 'blur' ? (
+                      <span className="desktop-vc-settings__bg-blur-icon" />
+                    ) : (
+                      <span className="desktop-vc-settings__bg-none-icon">✕</span>
+                    )}
+                  </span>
+                  <span>{opt.label}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Speaker requests */}
+        {roomId && (
+          <>
+            <div className="desktop-vc-settings__group-label">
+              {isHost ? 'Speaker requests' : 'Request to speak'}
+            </div>
+            {isHost ? (
+              <div className="desktop-vc-settings__speaker-list">
+                {speakerError && <p className="desktop-vc-settings__error">{speakerError}</p>}
+                {pendingRequests.length === 0 ? (
+                  <p className="desktop-vc-settings__empty">No pending requests</p>
+                ) : (
+                  pendingRequests.map((req) => {
+                    const isExpanded = expandedReqId === req.id
+                    const displayName = req.user?.name || req.user?.username || req.user?.id || req.id
+                    return (
+                      <div key={req.id} className="desktop-vc-settings__speaker-row">
+                        <div className="desktop-vc-settings__speaker-top">
+                          <button
+                            type="button"
+                            className="desktop-vc-settings__speaker-name-btn"
+                            onClick={() => setExpandedReqId(isExpanded ? null : req.id)}
+                            title={req.message ? 'Click to see message' : undefined}
+                          >
+                            <span className="desktop-vc-settings__speaker-name">{displayName}</span>
+                            {req.message && (
+                              <span className="desktop-vc-settings__speaker-expand-icon">
+                                {isExpanded ? '▲' : '▼'}
+                              </span>
+                            )}
+                          </button>
+                          <div className="desktop-vc-settings__speaker-actions">
+                            <button
+                              type="button"
+                              className="desktop-vc-settings__action-btn desktop-vc-settings__action-btn--approve"
+                              disabled={approvingId === req.id || !!rejectingId}
+                              onClick={() => handleApprove(req)}
+                            >
+                              {approvingId === req.id ? '…' : 'Approve'}
+                            </button>
+                            <button
+                              type="button"
+                              className="desktop-vc-settings__action-btn desktop-vc-settings__action-btn--reject"
+                              disabled={rejectingId === req.id || !!approvingId}
+                              onClick={() => handleReject(req)}
+                            >
+                              {rejectingId === req.id ? '…' : 'Reject'}
+                            </button>
+                          </div>
+                        </div>
+                        {isExpanded && req.message && (
+                          <div className="desktop-vc-settings__speaker-msg">{req.message}</div>
+                        )}
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            ) : audience ? (
+              <div className="desktop-vc-settings__speaker-request">
+                {speakerError && <p className="desktop-vc-settings__error">{speakerError}</p>}
+                {myRequest ? (
+                  <div className="desktop-vc-settings__my-request">
+                    <span className="desktop-vc-settings__my-request-label">
+                      Request pending…
+                    </span>
+                    <button
+                      type="button"
+                      className="desktop-vc-settings__action-btn desktop-vc-settings__action-btn--cancel"
+                      disabled={requestCanceling}
+                      onClick={handleCancelRequest}
+                    >
+                      {requestCanceling ? '…' : 'Cancel'}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      className="desktop-vc-settings__request-input"
+                      placeholder="Optional message to host…"
+                      value={requestMsg}
+                      onChange={(e) => setRequestMsg(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleRequestSpeak() }}
+                    />
+                    <button
+                      type="button"
+                      className="desktop-vc-settings__action-btn desktop-vc-settings__action-btn--primary"
+                      disabled={requestSubmitting}
+                      onClick={handleRequestSpeak}
+                    >
+                      {requestSubmitting ? '…' : 'Request to speak'}
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : null}
+          </>
+        )}
+
+        {/* Kick participants (host only) */}
+        {isHost && roomId && (
+          <>
+            <div className="desktop-vc-settings__group-label">Participants</div>
+            {kickError && <p className="desktop-vc-settings__error">{kickError}</p>}
+            {remoteParticipants.length === 0 ? (
+              <p className="desktop-vc-settings__empty">No other participants</p>
+            ) : (
+              <div className="desktop-vc-settings__kick-list">
+                {remoteParticipants.map((p) => {
+                  const displayName = p.name || p.identity || 'Unknown'
+                  return (
+                    <div key={p.identity} className="desktop-vc-settings__kick-row">
+                      <span className="desktop-vc-settings__kick-name">{displayName}</span>
+                      <button
+                        type="button"
+                        className="desktop-vc-settings__action-btn desktop-vc-settings__action-btn--danger"
+                        disabled={kickingId === p.identity}
+                        onClick={() => handleKick(p.identity, displayName)}
+                      >
+                        {kickingId === p.identity ? '…' : 'Kick'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </>
+        )}
+
       </div>
     </div>
   )
@@ -617,17 +957,34 @@ function DesktopControlBar({
   audience,
   onMessage,
   onReact,
+  chatBadgeCount,
+  settingsBadgeCount,
 }: {
   audience: boolean
   onMessage: (message: string) => void
   onReact: (code: string) => void
+  chatBadgeCount: number
+  settingsBadgeCount: number
 }) {
   const { localParticipant } = useLocalParticipant()
   const layoutContext = useMaybeLayoutContext()
   const canPublish = !audience && Boolean(localParticipant?.permissions?.canPublish)
+  const chatOpen = Boolean(layoutContext?.widget.state?.showChat)
   const settingsOpen = Boolean(layoutContext?.widget.state?.showSettings)
   const [pickerOpen, setPickerOpen] = useState(false)
   const reactionsBtnRef = useRef<HTMLButtonElement>(null)
+  const toggleSettingsDrawer = useCallback(() => {
+    const widget = layoutContext?.widget
+    if (!widget?.dispatch) return
+    if (chatOpen) {
+      widget.dispatch({ msg: 'toggle_chat' })
+    }
+    widget.dispatch({ msg: 'toggle_settings' })
+  }, [chatOpen, layoutContext?.widget])
+  useEffect(() => {
+    if (!chatOpen || !settingsOpen) return
+    layoutContext?.widget.dispatch?.({ msg: 'toggle_settings' })
+  }, [chatOpen, layoutContext?.widget, settingsOpen])
 
   return (
     <div className="lk-control-bar">
@@ -642,9 +999,6 @@ function DesktopControlBar({
         onDeviceError={(error) => onMessage(`Camera failed: ${error.message}`)}
       />
       <ElectronScreenShareButton canShare={canPublish} onMessage={onMessage} />
-      <ChatToggle title="Chat">
-        <span className="desktop-vc-control-icon">Chat</span>
-      </ChatToggle>
       <div className="desktop-vc-reactions-wrap">
         {pickerOpen && (
           <ReactionsBar
@@ -664,14 +1018,23 @@ function DesktopControlBar({
           <span className="desktop-vc-reactions-btn__icon" aria-hidden="true">🎭</span>
         </button>
       </div>
+      <ChatToggle title="Chat">
+        <ChatIcon />
+        {!chatOpen && chatBadgeCount > 0 && (
+          <span className="desktop-vc-control-badge">{chatBadgeCount > 99 ? '99+' : chatBadgeCount}</span>
+        )}
+      </ChatToggle>
       <button
         className="lk-button lk-settings-toggle"
         aria-pressed={settingsOpen}
-        onClick={() => layoutContext?.widget.dispatch?.({ msg: 'toggle_settings' })}
+        onClick={toggleSettingsDrawer}
         title="Settings"
         type="button"
       >
         <GearIcon />
+        {!settingsOpen && settingsBadgeCount > 0 && (
+          <span className="desktop-vc-control-badge">{settingsBadgeCount > 99 ? '99+' : settingsBadgeCount}</span>
+        )}
       </button>
       <DisconnectButton title="Leave">
         <LeaveIcon />
@@ -712,6 +1075,7 @@ function DesktopMeetingHeader({ title, participantCount }: { title: string; part
   const handleMaximize = async () => {
     if (isMiniMode) {
       await api?.exitMiniMode?.()
+      await api?.expandCurrentWindowHeight?.()
       window.dispatchEvent(new CustomEvent('desktop-vc-mini-mode', { detail: { enabled: false } }))
       setIsMiniMode(false)
       return
@@ -789,12 +1153,14 @@ function DesktopConference({
   onMessage,
   resolveParticipantAvatar,
   roomTitle,
+  roomId,
   hostIdentityHints,
 }: {
   audience: boolean
   onMessage: (message: string) => void
   resolveParticipantAvatar: (participant?: Participant | null) => string
   roomTitle: string
+  roomId?: string
   hostIdentityHints: string[]
 }) {
   const MINI_CAROUSEL_BREAKPOINT = 260
@@ -812,6 +1178,7 @@ function DesktopConference({
   const [desktopCarouselOverflow, setDesktopCarouselOverflow] = useState(false)
   const [desktopCarouselCanPrev, setDesktopCarouselCanPrev] = useState(false)
   const [desktopCarouselCanNext, setDesktopCarouselCanNext] = useState(false)
+  const [settingsBadgeCount, setSettingsBadgeCount] = useState(0)
   const conferenceRef = useRef<HTMLDivElement | null>(null)
   const layoutContext = useCreateLayoutContext()
   const { reactions, sendReaction } = useReactions()
@@ -914,6 +1281,15 @@ function DesktopConference({
       return false
     },
     [hostIdentitySet],
+  )
+  const { localParticipant } = useLocalParticipant()
+  // Depend on identity string (stable) rather than the whole participant object
+  // to avoid isHost flickering when LiveKit re-emits participant events.
+  const localIdentity = localParticipant?.identity ?? ''
+  const isHost = useMemo(
+    () => isHostParticipant(localParticipant),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isHostParticipant, localIdentity],
   )
   const prioritizedScreenShareTracks = useMemo(() => {
     return [...screenShareTracks].sort((left, right) => {
@@ -1533,14 +1909,25 @@ function DesktopConference({
               </FocusLayoutContainer>
             </div>
           )}
-          <DesktopControlBar audience={audience} onMessage={onMessage} onReact={sendReaction} />
+          <DesktopControlBar
+            audience={audience}
+            onMessage={onMessage}
+            onReact={sendReaction}
+            chatBadgeCount={Number(widgetState.unreadMessages || 0)}
+            settingsBadgeCount={settingsBadgeCount}
+          />
         </div>
         <ReactionOverlay reactions={reactions} />
         <div className={chatDrawerClassName} aria-hidden={!widgetState.showChat}>
-          <Chat />
+          <Chat channelTopic={ROOM_CHAT_TOPIC} />
         </div>
         <div className={settingsDrawerClassName} aria-hidden={!widgetState.showSettings}>
-          <SettingsPanel />
+          <SettingsPanel
+            roomId={roomId}
+            isHost={isHost}
+            audience={audience}
+            onPendingRequestCountChange={setSettingsBadgeCount}
+          />
         </div>
       </div>
       <RoomAudioRenderer />
@@ -1561,6 +1948,7 @@ type Props = {
   serverUrl?: string
   roomTitle: string
   roomName: string
+  roomId?: string
   hostId?: string
   hostName?: string
   hostUsername?: string
@@ -1586,6 +1974,7 @@ export default function LiveVideoStage(props: Props) {
     serverUrl,
     roomTitle,
     roomName,
+    roomId,
     hostId,
     hostName,
     hostUsername,
@@ -2365,9 +2754,6 @@ export default function LiveVideoStage(props: Props) {
             height: var(--desktop-vc-control-button-size);
             border-radius: 10px;
           }
-          .desktop-vc-shell .lk-control-bar .lk-chat-toggle {
-            width: 44px;
-          }
           .desktop-vc-shell .desktop-vc-control-icon {
             font-size: 10px;
             letter-spacing: 0.02em;
@@ -2568,6 +2954,29 @@ export default function LiveVideoStage(props: Props) {
           box-shadow: none;
           transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
         }
+        .desktop-vc-shell .lk-control-bar .lk-chat-toggle,
+        .desktop-vc-shell .lk-control-bar .lk-settings-toggle {
+          position: relative;
+          overflow: visible;
+        }
+        .desktop-vc-shell .desktop-vc-control-badge {
+          position: absolute;
+          top: -5px;
+          right: -5px;
+          min-width: 16px;
+          height: 16px;
+          border-radius: 999px;
+          padding: 0 4px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 10px;
+          font-weight: 700;
+          color: #fff;
+          background: linear-gradient(135deg, #ef4444, #f97316);
+          border: 1px solid rgba(255, 255, 255, 0.35);
+          pointer-events: none;
+        }
         .desktop-vc-shell .lk-control-bar .lk-button:hover,
         .desktop-vc-shell .lk-control-bar .lk-disconnect-button:hover,
         .desktop-vc-shell .lk-control-bar .lk-chat-toggle:hover,
@@ -2581,11 +2990,14 @@ export default function LiveVideoStage(props: Props) {
         .desktop-vc-shell .lk-control-bar .lk-button[aria-pressed='true'],
         .desktop-vc-shell .lk-control-bar .lk-chat-toggle[aria-pressed='true'],
         .desktop-vc-shell .lk-control-bar .lk-settings-toggle[aria-pressed='true'] {
-          border-color: rgba(99, 210, 198, 0.58);
+          border-color: rgba(118, 144, 160, 0.38);
           background:
-            linear-gradient(135deg, rgba(39, 150, 137, 0.82), rgba(56, 111, 192, 0.76));
-          color: #f3fffd;
-          box-shadow: 0 10px 24px rgba(35, 120, 140, 0.28);
+            linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0)),
+            rgba(37, 39, 43, 0.98);
+          color: #e8f0f8;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.07),
+            0 0 0 1px rgba(118,144,160,0.12);
         }
         .desktop-vc-shell .lk-control-bar .lk-disconnect-button {
           background: linear-gradient(135deg, var(--vc-danger-strong), var(--vc-danger));
@@ -2600,21 +3012,20 @@ export default function LiveVideoStage(props: Props) {
           text-transform: uppercase;
         }
         .desktop-vc-shell .desktop-vc-drawer {
+          --drawer-w: min(360px, 92vw);
           position: fixed;
           top: var(--desktop-vc-header-height);
           left: auto;
           right: 0;
           bottom: calc(var(--desktop-vc-control-bar-height) + var(--desktop-vc-control-gap));
-          width: min(360px, 92vw);
+          width: var(--drawer-w);
           min-width: min(280px, 92vw);
           margin: 0;
           border-left: 1px solid rgba(118, 144, 160, 0.14);
           border-radius: 0;
-          background:
-            radial-gradient(circle at top right, rgba(56, 201, 188, 0.08), transparent 28%),
-            linear-gradient(180deg, rgba(13, 18, 24, 0.98), rgba(7, 10, 14, 0.98));
+          background: var(--vc-header-bg);
           box-shadow:
-            inset 0 1px 0 rgba(255, 255, 255, 0.03),
+            inset 0 1px 0 rgba(255, 255, 255, 0.04),
             -18px 0 44px rgba(0, 0, 0, 0.34);
           overflow: hidden;
           z-index: 180;
@@ -2638,65 +3049,448 @@ export default function LiveVideoStage(props: Props) {
           width: 100%;
           height: 100%;
         }
-        .desktop-vc-shell .desktop-vc-drawer > .lk-chat,
+        .desktop-vc-shell .desktop-vc-drawer > .lk-chat {
+          height: 100%;
+          width: 100%;
+          margin: 0;
+          display: grid;
+          grid-template-rows: auto minmax(0, 1fr) auto;
+          align-items: stretch;
+          background: var(--vc-header-bg);
+        }
         .desktop-vc-shell .desktop-vc-drawer > .desktop-vc-settings {
           height: 100%;
           margin: 0;
+          display: flex;
+          flex-direction: column;
+        }
+        .desktop-vc-shell .desktop-vc-drawer > .lk-chat .lk-chat-messages {
+          min-height: 0;
+          background: var(--vc-header-bg);
         }
         .desktop-vc-shell .lk-chat-header,
         .desktop-vc-shell .desktop-vc-settings__header {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          gap: 12px;
-          padding: 16px 18px;
-          border-bottom: 1px solid rgba(118, 144, 160, 0.1);
+          gap: 8px;
+          padding: 10px 14px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
           background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0)),
-            rgba(12, 17, 22, 0.92);
+            linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+            var(--vc-header-bg);
         }
         .desktop-vc-shell .desktop-vc-settings__header {
           flex-direction: column;
           align-items: flex-start;
+          gap: 2px;
+          background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
+            rgba(0, 0, 0, 0.35);
+        }
+        .desktop-vc-shell .lk-chat-header {
+          background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
+            rgba(0, 0, 0, 0.35);
+        }
+        .desktop-vc-shell .desktop-vc-settings__header strong {
+          font-size: 15px;
         }
         .desktop-vc-shell .desktop-vc-settings__header span {
           color: var(--vc-text-soft);
-          font-size: 12px;
+          font-size: 11px;
         }
         .desktop-vc-shell .desktop-vc-settings__body {
-          display: grid;
-          gap: 18px;
-          padding: 20px 18px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          padding: 14px 16px 20px;
+          flex: 1;
+          overflow-y: auto;
+          min-height: 0;
         }
+        /* group-label gets extra top margin to visually separate sections */
+        .desktop-vc-shell .desktop-vc-settings__body > .desktop-vc-settings__group-label {
+          margin-top: 10px;
+        }
+        .desktop-vc-shell .desktop-vc-settings__body > .desktop-vc-settings__group-label:first-child {
+          margin-top: 0;
+        }
+        /* each section: label left | device button right */
         .desktop-vc-shell .desktop-vc-settings__section {
-          display: grid;
+          display: flex;
+          align-items: center;
           gap: 10px;
         }
         .desktop-vc-shell .desktop-vc-settings__section label {
-          color: var(--vc-text);
-          font-size: 12px;
-          font-weight: 600;
-          letter-spacing: 0.03em;
-          text-transform: uppercase;
+          flex: 1;
+          color: var(--vc-text-soft);
+          font-size: 13px;
+          font-weight: 500;
+          white-space: nowrap;
+        }
+        .desktop-vc-shell .desktop-vc-settings__section .lk-media-device-select {
+          flex: 0 0 auto;
+          flex-direction: column;
+          gap: 4px;
+          align-items: flex-end;
         }
         .desktop-vc-shell .desktop-vc-settings button {
           width: 100%;
           justify-content: flex-start;
         }
-        .desktop-vc-shell .lk-device-menu,
+        /* action buttons inside a row keep their natural width */
+        .desktop-vc-shell .desktop-vc-settings__kick-row .desktop-vc-settings__action-btn,
+        .desktop-vc-shell .desktop-vc-settings__speaker-row .desktop-vc-settings__action-btn {
+          width: auto;
+          flex-shrink: 0;
+        }
+        /* device list item buttons (inside popup) */
+        .desktop-vc-shell .lk-media-device-select li {
+          list-style: none;
+        }
         .desktop-vc-shell .lk-media-device-select .lk-button {
-          background: rgba(12, 17, 22, 0.98);
-          border-color: rgba(118, 144, 160, 0.14);
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 7px;
+          color: rgba(239, 245, 251, 0.65);
+          font-size: 11px;
+          letter-spacing: 0;
+          width: 100%;
+          display: block;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+          text-align: left;
+          padding: 0.38rem 0.6rem;
+          transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+        }
+        .desktop-vc-shell .lk-media-device-select .lk-button:hover {
+          background: rgba(255, 255, 255, 0.11);
+          border-color: rgba(255, 255, 255, 0.18);
           color: var(--vc-text);
         }
+        /* lk-button-menu: trigger button that opens device dropdown */
+        .desktop-vc-shell .desktop-vc-settings__section .lk-button.lk-button-menu {
+          width: auto;
+          max-width: 110px;
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          padding: 0.3rem 0.55rem;
+          border-radius: 7px;
+          background: rgba(255, 255, 255, 0.07);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: rgba(239, 245, 251, 0.75);
+          font-size: 11px;
+          cursor: pointer;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+          margin-left: auto;
+          transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+        }
+        .desktop-vc-shell .desktop-vc-settings__section .lk-button.lk-button-menu:hover {
+          background: rgba(255, 255, 255, 0.12);
+          border-color: rgba(255, 255, 255, 0.2);
+          color: var(--vc-text);
+        }
+        .desktop-vc-shell .desktop-vc-settings__section .lk-button.lk-button-menu svg {
+          flex-shrink: 0;
+          opacity: 0.55;
+        }
+        /* active / selected device */
+        .desktop-vc-shell .lk-media-device-select [data-lk-active='true'] > .lk-button {
+          background: rgba(99, 210, 198, 0.14);
+          border-color: rgba(99, 210, 198, 0.42);
+          color: #c6f4ee;
+        }
+        /* popup dropdown */
+        .desktop-vc-shell .lk-device-menu {
+          background: #2c2f35;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          border-radius: 10px;
+          box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+          color: var(--vc-text);
+          width: calc(var(--drawer-w, 360px) * 0.8);
+          box-sizing: border-box;
+          overflow: hidden;
+        }
+        .desktop-vc-shell .lk-device-menu .lk-button {
+          width: 100%;
+          box-sizing: border-box;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          text-align: left;
+          justify-content: flex-start;
+        }
+        /* ── Settings: group label ──────────────────────────────────── */
+        .desktop-vc-shell .desktop-vc-settings__group-label {
+          font-size: 14px;
+          font-weight: 650;
+          letter-spacing: 0.01em;
+          color: var(--vc-text);
+          padding-bottom: 5px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          margin-bottom: 2px;
+        }
+        /* ── Settings: background toggle ────────────────────────────── */
+        .desktop-vc-shell .desktop-vc-settings__bg-row {
+          display: flex;
+          gap: 8px;
+        }
+        .desktop-vc-shell .desktop-vc-settings__bg-btn {
+          flex: 1;
+          padding: 0.38rem 0.5rem;
+          border-radius: 7px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          color: rgba(239, 245, 251, 0.65);
+          font-size: 11px;
+          cursor: pointer;
+          transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+        }
+        .desktop-vc-shell .desktop-vc-settings__bg-btn:hover {
+          background: rgba(255, 255, 255, 0.11);
+          color: var(--vc-text);
+        }
+        .desktop-vc-shell .desktop-vc-settings__bg-btn.is-active {
+          background: rgba(99, 210, 198, 0.14);
+          border-color: rgba(99, 210, 198, 0.42);
+          color: #c6f4ee;
+        }
+        .desktop-vc-shell .desktop-vc-settings__bg-btn {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 5px;
+          padding: 5px 5px 6px;
+        }
+        .desktop-vc-shell .desktop-vc-settings__bg-btn-thumb {
+          width: 100%;
+          aspect-ratio: 16 / 9;
+          border-radius: 4px;
+          overflow: hidden;
+          background: rgba(255, 255, 255, 0.06);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .desktop-vc-shell .desktop-vc-settings__bg-btn-thumb img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+        }
+        .desktop-vc-shell .desktop-vc-settings__bg-none-icon {
+          font-size: 13px;
+          color: var(--vc-text-soft);
+        }
+        .desktop-vc-shell .desktop-vc-settings__bg-blur-icon {
+          width: 100%;
+          height: 100%;
+          display: block;
+          background: linear-gradient(135deg, rgba(99,210,198,0.18) 0%, rgba(99,210,198,0.06) 100%);
+          backdrop-filter: blur(3px);
+        }
+        /* ── Settings: action buttons (approve / reject / kick) ──────── */
+        .desktop-vc-shell .desktop-vc-settings__action-btn {
+          padding: 0.28rem 0.7rem;
+          border-radius: 6px;
+          font-size: 11px;
+          font-weight: 500;
+          cursor: pointer;
+          border: 1px solid transparent;
+          transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+          flex-shrink: 0;
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn:disabled {
+          opacity: 0.45;
+          cursor: not-allowed;
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--primary {
+          background: rgba(99, 210, 198, 0.16);
+          border-color: rgba(99, 210, 198, 0.38);
+          color: #c6f4ee;
+          width: 100%;
+          padding: 0.42rem 0.7rem;
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--primary:hover:not(:disabled) {
+          background: rgba(99, 210, 198, 0.26);
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--approve {
+          background: rgba(34, 197, 94, 0.14);
+          border-color: rgba(34, 197, 94, 0.35);
+          color: #86efac;
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--approve:hover:not(:disabled) {
+          background: rgba(34, 197, 94, 0.24);
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--reject {
+          background: rgba(244, 63, 94, 0.12);
+          border-color: rgba(244, 63, 94, 0.32);
+          color: #fda4af;
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--reject:hover:not(:disabled) {
+          background: rgba(244, 63, 94, 0.22);
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--danger {
+          background: rgba(244, 63, 94, 0.1);
+          border-color: rgba(244, 63, 94, 0.28);
+          color: #fda4af;
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--danger:hover:not(:disabled) {
+          background: rgba(244, 63, 94, 0.2);
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--cancel {
+          background: rgba(255, 255, 255, 0.06);
+          border-color: rgba(255, 255, 255, 0.12);
+          color: rgba(239, 245, 251, 0.65);
+        }
+        .desktop-vc-shell .desktop-vc-settings__action-btn--cancel:hover:not(:disabled) {
+          background: rgba(255, 255, 255, 0.1);
+          color: var(--vc-text);
+        }
+        /* ── Settings: speaker requests list ────────────────────────── */
+        .desktop-vc-shell .desktop-vc-settings__speaker-list,
+        .desktop-vc-shell .desktop-vc-settings__kick-list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .desktop-vc-shell .desktop-vc-settings__speaker-row,
+        .desktop-vc-shell .desktop-vc-settings__kick-row {
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+          padding: 0;
+          border-radius: 7px;
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.07);
+          overflow: hidden;
+        }
+        .desktop-vc-shell .desktop-vc-settings__kick-row {
+          flex-direction: row;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 8px;
+        }
+        .desktop-vc-shell .desktop-vc-settings__speaker-top {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 8px;
+          width: 100%;
+          box-sizing: border-box;
+        }
+        .desktop-vc-shell .desktop-vc-settings__speaker-name-btn {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          background: none;
+          border: none;
+          padding: 0;
+          cursor: pointer;
+          width: auto;
+          text-align: left;
+          justify-content: flex-start;
+        }
+        .desktop-vc-shell .desktop-vc-settings__speaker-expand-icon {
+          font-size: 8px;
+          color: var(--vc-text-soft);
+          flex-shrink: 0;
+        }
+        .desktop-vc-shell .desktop-vc-settings__speaker-msg {
+          padding: 6px 10px 8px;
+          font-size: 11px;
+          color: var(--vc-text-soft);
+          font-style: italic;
+          border-top: 1px solid rgba(255, 255, 255, 0.06);
+          background: rgba(0, 0, 0, 0.12);
+          word-break: break-word;
+        }
+        .desktop-vc-shell .desktop-vc-settings__speaker-name,
+        .desktop-vc-shell .desktop-vc-settings__kick-name {
+          flex: 1;
+          min-width: 0;
+          font-size: 11px;
+          color: var(--vc-text);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .desktop-vc-shell .desktop-vc-settings__speaker-note {
+          font-size: 10px;
+          color: var(--vc-text-soft);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 80px;
+        }
+        .desktop-vc-shell .desktop-vc-settings__speaker-actions {
+          display: flex;
+          gap: 5px;
+          flex-shrink: 0;
+        }
+        /* ── Settings: audience request-to-speak ─────────────────────── */
+        .desktop-vc-shell .desktop-vc-settings__speaker-request {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .desktop-vc-shell .desktop-vc-settings__request-input {
+          width: 100%;
+          box-sizing: border-box;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 7px;
+          color: var(--vc-text);
+          font-size: 11px;
+          padding: 0.38rem 0.6rem;
+          outline: none;
+        }
+        .desktop-vc-shell .desktop-vc-settings__request-input:focus {
+          border-color: rgba(99, 210, 198, 0.4);
+        }
+        .desktop-vc-shell .desktop-vc-settings__my-request {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .desktop-vc-shell .desktop-vc-settings__my-request-label {
+          flex: 1;
+          font-size: 11px;
+          color: var(--vc-text-soft);
+          font-style: italic;
+        }
+        .desktop-vc-shell .desktop-vc-settings__empty {
+          font-size: 11px;
+          color: var(--vc-text-soft);
+          text-align: center;
+          padding: 6px 0;
+          margin: 0;
+        }
+        .desktop-vc-shell .desktop-vc-settings__error {
+          font-size: 11px;
+          color: #fda4af;
+          margin: 0;
+          padding: 4px 6px;
+          background: rgba(244, 63, 94, 0.1);
+          border-radius: 5px;
+        }
         .desktop-vc-shell .lk-chat-form {
-          border-top: 1px solid rgba(118, 144, 160, 0.1);
-          background: rgba(9, 12, 16, 0.94);
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+          background: var(--vc-header-bg);
         }
         .desktop-vc-shell .lk-chat-form input,
         .desktop-vc-shell .lk-chat-form textarea {
-          background: rgba(18, 24, 30, 0.9);
-          border: 1px solid rgba(118, 144, 160, 0.12);
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.1);
           color: var(--vc-text);
         }
         .desktop-vc-shell .lk-chat-entry .lk-message-body {
@@ -2877,6 +3671,7 @@ export default function LiveVideoStage(props: Props) {
           onMessage={setActionMessage}
           resolveParticipantAvatar={resolveParticipantAvatar}
           roomTitle={roomTitle}
+          roomId={roomId}
           hostIdentityHints={hostIdentityHints}
         />
       </LiveKitRoom>
