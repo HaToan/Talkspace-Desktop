@@ -40,6 +40,10 @@ const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
 const allowInsecureCertFlag = process.env.ELECTRON_ALLOW_INSECURE_CERT
 const allowInsecureCert =
   allowInsecureCertFlag === '1' || (isDev && allowInsecureCertFlag !== '0')
+const selectSourceWindowIconPath = path.join(__dirname, 'assets', 'select-source-icon.png')
+const selectSourceWindowIcon = fs.existsSync(selectSourceWindowIconPath)
+  ? selectSourceWindowIconPath
+  : undefined
 
 if (allowInsecureCert) {
   app.commandLine.appendSwitch('ignore-certificate-errors')
@@ -632,6 +636,17 @@ const openDesktopSourcePickerWindow = async (parentWindow) => {
       minWidth: 780,
       minHeight: 560,
       title: 'Select source to share',
+      icon: selectSourceWindowIcon,
+      ...(process.platform === 'win32'
+        ? {
+            titleBarStyle: 'hidden',
+            titleBarOverlay: {
+              color: '#25272b',
+              symbolColor: '#ffffff',
+              height: 34,
+            },
+          }
+        : {}),
       parent: parentWindow || undefined,
       modal: Boolean(parentWindow),
       autoHideMenuBar: true,
@@ -1046,7 +1061,8 @@ app.whenReady().then(() => {
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
     if (!senderWindow || senderWindow.isDestroyed()) return { success: false }
 
-    if (!miniModeRestoreState.has(senderWindow.id)) {
+    const alreadyMini = miniModeRestoreState.has(senderWindow.id)
+    if (!alreadyMini) {
       const normalBounds =
         senderWindow.isMaximized() || senderWindow.isFullScreen()
           ? senderWindow.getNormalBounds()
@@ -1104,7 +1120,7 @@ app.whenReady().then(() => {
     senderWindow.setMaximumSize(boundedMiniWidth, maxMiniHeight)
     senderWindow.setBounds({ x, y, width: boundedMiniWidth, height: boundedMiniHeight }, true)
 
-    return { success: true }
+    return { success: true, alreadyMini }
   })
 
   // Expand window width so the drawer (chat/settings) can render at full size.

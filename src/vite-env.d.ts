@@ -108,8 +108,40 @@ declare global {
         success: boolean
         error?: string
       }>
+      minimizeCurrentWindow: () => Promise<{
+        success: boolean
+        error?: string
+      }>
+      enterMiniMode: (payload?: { participantCount?: number }) => Promise<{
+        success: boolean
+        alreadyMini?: boolean
+        error?: string
+      }>
+      exitMiniMode: () => Promise<{
+        success: boolean
+        restored?: boolean
+        error?: string
+      }>
       setCurrentWindowResizable: (resizable: boolean) => Promise<{
         success: boolean
+        error?: string
+      }>
+      maximizeCurrentWindow: () => Promise<{
+        success: boolean
+        isMaximized: boolean
+        isFullScreen: boolean
+        error?: string
+      }>
+      toggleFullscreenCurrentWindow: () => Promise<{
+        success: boolean
+        isMaximized: boolean
+        isFullScreen: boolean
+        error?: string
+      }>
+      isMaximizedCurrentWindow: () => Promise<{
+        success: boolean
+        isMaximized: boolean
+        isFullScreen: boolean
         error?: string
       }>
       expandForDrawer: () => Promise<{
@@ -119,6 +151,11 @@ declare global {
       }>
       collapseFromDrawer: () => Promise<{
         success: boolean
+        error?: string
+      }>
+      expandCurrentWindowHeight: () => Promise<{
+        success: boolean
+        skipped?: string
         error?: string
       }>
       saveRecording: (payload: {

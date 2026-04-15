@@ -3326,16 +3326,16 @@ body {
 .conference-window-root .livekit-grid,
 .conference-window-root .livekit-focus-wrapper .lk-focus-layout,
 .conference-window-root .livekit-focus-wrapper .lk-carousel {
-  background: rgba(8, 20, 45, 0.88);
-  border: 1px solid rgba(74, 122, 191, 0.26);
+  background: rgba(58, 64, 76, 0.62);
+  border: 1px solid rgba(176, 190, 208, 0.24);
 }
 
 .conference-window-root .lk-participant-tile {
-  border: 1px solid rgba(92, 146, 212, 0.34);
+  border: 1px solid rgba(186, 200, 216, 0.32);
   border-radius: 14px;
   background:
-    radial-gradient(circle at 12% 10%, rgba(89, 214, 187, 0.12), transparent 42%),
-    linear-gradient(180deg, rgba(7, 18, 38, 0.9), rgba(6, 15, 31, 0.94));
+    radial-gradient(circle at 12% 10%, rgba(198, 214, 233, 0.1), transparent 42%),
+    linear-gradient(180deg, rgba(50, 56, 68, 0.92), rgba(36, 42, 54, 0.96));
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
@@ -3344,12 +3344,12 @@ body {
 }
 
 .conference-window-root .livekit-focus-wrapper .lk-focus-layout > .lk-participant-tile {
-  border-color: rgba(106, 170, 232, 0.4);
+  border-color: rgba(190, 204, 222, 0.42);
 }
 
 .conference-window-root .lk-participant-metadata-item {
-  background: rgba(5, 14, 30, 0.66);
-  border: 1px solid rgba(74, 122, 191, 0.3);
+  background: rgba(46, 53, 66, 0.68);
+  border: 1px solid rgba(176, 190, 208, 0.28);
   color: var(--cw-text);
 }
 

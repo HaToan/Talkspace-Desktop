@@ -436,6 +436,9 @@ function ElectronScreenShareButton({
   const [pending, setPending] = useState(false)
   const [fallbackEnabled, setFallbackEnabled] = useState(false)
   const fallbackPublishedTrackRef = useRef<any>(null)
+  const shareAutoMiniModeRef = useRef(false)
+  const shareEnabled = fallbackEnabled || isScreenShareEnabled
+  const previousShareEnabledRef = useRef(shareEnabled)
 
   const stopFallbackShare = useCallback(async () => {
     const publishedTrack = fallbackPublishedTrackRef.current
@@ -460,10 +463,28 @@ function ElectronScreenShareButton({
     }
   }, [stopFallbackShare])
 
+  const exitMiniModeAfterShare = useCallback(async () => {
+    if (!shareAutoMiniModeRef.current) return
+    shareAutoMiniModeRef.current = false
+    try {
+      const result = await window.electronAPI?.exitMiniMode?.()
+      if (result?.success) {
+        window.dispatchEvent(
+          new CustomEvent('desktop-vc-mini-mode', {
+            detail: { enabled: false, reason: 'screen-share-stop' },
+          }),
+        )
+      }
+    } catch {
+      // Ignore restore failures: screen share stop should still complete.
+    }
+  }, [])
+
   const enterMiniModeAfterShare = useCallback(async () => {
     try {
       const result = await window.electronAPI?.enterMiniMode?.()
-      if (result?.success) {
+      if (result?.success && !result.alreadyMini) {
+        shareAutoMiniModeRef.current = true
         window.dispatchEvent(
           new CustomEvent('desktop-vc-mini-mode', {
             detail: { enabled: true, reason: 'screen-share' },
@@ -474,6 +495,14 @@ function ElectronScreenShareButton({
       // Ignore window resize failures: screen share itself already succeeded.
     }
   }, [])
+
+  useEffect(() => {
+    const wasEnabled = previousShareEnabledRef.current
+    if (wasEnabled && !shareEnabled) {
+      void exitMiniModeAfterShare()
+    }
+    previousShareEnabledRef.current = shareEnabled
+  }, [shareEnabled, exitMiniModeAfterShare])
 
   const startFallbackShare = useCallback(
     async (sourceId: string) => {
@@ -568,20 +597,18 @@ function ElectronScreenShareButton({
     stopFallbackShare,
   ])
 
-  const enabled = fallbackEnabled || isScreenShareEnabled
-
   return (
     <button
       className="lk-button"
-      aria-pressed={enabled}
+      aria-pressed={shareEnabled}
       data-lk-source="screen_share"
-      data-lk-enabled={enabled}
+      data-lk-enabled={shareEnabled}
       disabled={pending || !canShare}
       onClick={() => void toggleScreenShare()}
-      title={enabled ? 'Stop screen share' : 'Share screen'}
+      title={shareEnabled ? 'Stop screen share' : 'Share screen'}
       type="button"
     >
-      {enabled ? <ScreenShareStopIcon /> : <ScreenShareIcon />}
+      {shareEnabled ? <ScreenShareStopIcon /> : <ScreenShareIcon />}
     </button>
   )
 }
@@ -1368,6 +1395,40 @@ function DesktopConference({
     widgetState.showSettings ? ' desktop-vc-drawer--open' : ''
   }`
 
+  useEffect(() => {
+    const isDrawerOpen = widgetState.showChat || widgetState.showSettings
+    if (!isDrawerOpen) return
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Element | null
+      if (!target) return
+
+      // Keep native toggle behavior stable: don't auto-close on chat/settings toggle buttons.
+      if (target.closest('.lk-chat-toggle') || target.closest('.lk-settings-toggle')) return
+
+      // Interacting inside drawer (or device picker controls) should not close it.
+      if (
+        target.closest('.desktop-vc-drawer') ||
+        target.closest('.lk-device-menu') ||
+        target.closest('.lk-media-device-select')
+      ) {
+        return
+      }
+
+      if (widgetState.showChat) {
+        layoutContext.widget.dispatch?.({ msg: 'toggle_chat' })
+      }
+      if (widgetState.showSettings) {
+        layoutContext.widget.dispatch?.({ msg: 'toggle_settings' })
+      }
+    }
+
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [layoutContext.widget, widgetState.showChat, widgetState.showSettings])
+
   return (
     <LayoutContextProvider value={layoutContext} onWidgetChange={setWidgetState}>
       <div className="lk-video-conference desktop-vc-conference" ref={conferenceRef}>
@@ -2030,6 +2091,9 @@ export default function LiveVideoStage(props: Props) {
           position: relative;
           padding: 0;
           gap: 14px;
+          border: 0;
+          border-radius: 0;
+          background: transparent;
         }
         .desktop-vc-shell .lk-grid-layout-wrapper,
         .desktop-vc-shell .lk-focus-layout-wrapper,
@@ -2326,14 +2390,14 @@ export default function LiveVideoStage(props: Props) {
           position: relative;
           isolation: isolate;
           border-radius: 18px;
-          border: 1px solid rgba(168, 186, 212, 0.18);
+          border: 1px solid rgba(178, 194, 214, 0.24);
           background:
-            radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015) 40%, rgba(20, 24, 32, 0) 74%),
-            linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
-            rgba(20, 24, 32, 0.55);
+            radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02) 40%, rgba(20, 24, 32, 0) 74%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0)),
+            rgba(58, 64, 76, 0.58);
           box-shadow:
             inset 0 1px 0 rgba(255, 255, 255, 0.06),
-            0 10px 26px rgba(0, 0, 0, 0.24);
+            0 10px 24px rgba(0, 0, 0, 0.16);
           backdrop-filter: blur(8px) saturate(1.06);
           -webkit-backdrop-filter: blur(8px) saturate(1.06);
         }
@@ -2365,21 +2429,21 @@ export default function LiveVideoStage(props: Props) {
         }
         .desktop-vc-shell .lk-participant-tile {
           border-radius: 20px;
-          border: 1px solid rgba(118, 144, 160, 0.16);
+          border: 1px solid rgba(178, 194, 214, 0.26);
           background:
-            radial-gradient(circle at top, rgba(56, 201, 188, 0.08), transparent 42%),
-            linear-gradient(180deg, rgba(20, 27, 34, 0.96), rgba(10, 14, 18, 0.98));
+            radial-gradient(circle at top, rgba(173, 198, 226, 0.08), transparent 44%),
+            linear-gradient(180deg, rgba(50, 56, 68, 0.94), rgba(36, 42, 54, 0.96));
           box-shadow:
             inset 0 1px 0 rgba(255, 255, 255, 0.04),
-            0 14px 32px rgba(0, 0, 0, 0.18);
+            0 12px 24px rgba(0, 0, 0, 0.14);
           transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
         }
         .desktop-vc-shell .lk-participant-tile:hover {
           transform: translateY(-1px);
-          border-color: rgba(126, 205, 196, 0.32);
+          border-color: rgba(188, 204, 224, 0.4);
           box-shadow:
             inset 0 1px 0 rgba(255, 255, 255, 0.05),
-            0 16px 36px rgba(0, 0, 0, 0.22);
+            0 14px 28px rgba(0, 0, 0, 0.16);
         }
         .desktop-vc-shell .lk-participant-media-video,
         .desktop-vc-shell .lk-participant-placeholder {
@@ -2428,8 +2492,8 @@ export default function LiveVideoStage(props: Props) {
         .desktop-vc-shell .lk-participant-placeholder {
           background:
             radial-gradient(circle at 50% 28%, rgba(255, 255, 255, 0.06), transparent 24%),
-            radial-gradient(circle at 50% 120%, rgba(99, 210, 198, 0.08), transparent 22%),
-            linear-gradient(180deg, rgba(22, 29, 37, 0.96), rgba(10, 14, 18, 0.98));
+            radial-gradient(circle at 50% 120%, rgba(176, 196, 220, 0.08), transparent 24%),
+            linear-gradient(180deg, rgba(52, 58, 70, 0.94), rgba(38, 44, 56, 0.96));
         }
         .desktop-vc-shell .lk-participant-metadata {
           right: 10px;
@@ -2438,9 +2502,9 @@ export default function LiveVideoStage(props: Props) {
         }
         .desktop-vc-shell .lk-participant-metadata-item {
           padding: 0.34rem 0.55rem;
-          border: 1px solid rgba(136, 172, 206, 0.18);
+          border: 1px solid rgba(178, 194, 214, 0.26);
           border-radius: 12px;
-          background: rgba(6, 10, 14, 0.62);
+          background: rgba(46, 52, 64, 0.62);
           color: var(--vc-text);
           backdrop-filter: blur(10px);
         }
