@@ -460,6 +460,21 @@ function ElectronScreenShareButton({
     }
   }, [stopFallbackShare])
 
+  const enterMiniModeAfterShare = useCallback(async () => {
+    try {
+      const result = await window.electronAPI?.enterMiniMode?.()
+      if (result?.success) {
+        window.dispatchEvent(
+          new CustomEvent('desktop-vc-mini-mode', {
+            detail: { enabled: true, reason: 'screen-share' },
+          }),
+        )
+      }
+    } catch {
+      // Ignore window resize failures: screen share itself already succeeded.
+    }
+  }, [])
+
   const startFallbackShare = useCallback(
     async (sourceId: string) => {
       if (!sourceId) {
@@ -528,11 +543,13 @@ function ElectronScreenShareButton({
           return
         }
         await startFallbackShare(pickedSource.id)
+        await enterMiniModeAfterShare()
         onMessage('')
         return
       }
 
       await localParticipant.setScreenShareEnabled(true)
+      await enterMiniModeAfterShare()
       onMessage('')
     } catch (error: any) {
       onMessage(getScreenShareFriendlyError(error))
@@ -546,6 +563,7 @@ function ElectronScreenShareButton({
     localParticipant,
     onMessage,
     pending,
+    enterMiniModeAfterShare,
     startFallbackShare,
     stopFallbackShare,
   ])
@@ -646,13 +664,28 @@ function DesktopMeetingHeader({ title, participantCount }: { title: string; part
     })
   }, [api])
 
+  useEffect(() => {
+    const onMiniModeEvent = (event: Event) => {
+      const customEvent = event as CustomEvent<{ enabled?: boolean }>
+      if (typeof customEvent.detail?.enabled === 'boolean') {
+        setIsMiniMode(customEvent.detail.enabled)
+      }
+    }
+    window.addEventListener('desktop-vc-mini-mode', onMiniModeEvent as EventListener)
+    return () => {
+      window.removeEventListener('desktop-vc-mini-mode', onMiniModeEvent as EventListener)
+    }
+  }, [])
+
   const handleMinimize = async () => {
     await api?.enterMiniMode?.({ participantCount })
+    window.dispatchEvent(new CustomEvent('desktop-vc-mini-mode', { detail: { enabled: true } }))
     setIsMiniMode(true)
   }
   const handleMaximize = async () => {
     if (isMiniMode) {
       await api?.exitMiniMode?.()
+      window.dispatchEvent(new CustomEvent('desktop-vc-mini-mode', { detail: { enabled: false } }))
       setIsMiniMode(false)
       return
     }
@@ -977,14 +1010,22 @@ function DesktopConference({
 
   const carouselTracks = tracks.filter((track) => !isSameTrackRef(track, focusTrack))
   const canNavigateMiniCarousel = isMiniWidth && miniCarouselOverflow
-  const canNavigateDesktopCarousel = !isMiniWidth && desktopCarouselOverflow
   const isScreenShareFocused =
     !!focusTrack &&
     isTrackReference(focusTrack) &&
     focusTrack.publication.source === Track.Source.ScreenShare
-  const focusLayoutWrapperClassName = `lk-focus-layout-wrapper${
-    isScreenShareFocused ? ' desktop-vc-focus-layout--screenshare' : ''
-  }`
+  const desktopCarouselOrientation: 'vertical' | 'horizontal' =
+    isMiniWidth ? 'vertical' : 'horizontal'
+  const canNavigateDesktopCarousel =
+    !isMiniWidth &&
+    desktopCarouselOrientation === 'horizontal' &&
+    desktopCarouselOverflow
+  const focusLayoutWrapperClassName = [
+    'lk-focus-layout-wrapper',
+    isScreenShareFocused ? 'desktop-vc-focus-layout--screenshare' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
   const carouselRegionClassName = `desktop-vc-carousel-region${
     !isMiniWidth && !desktopCarouselOverflow ? ' desktop-vc-carousel-region--centered' : ''
   }`
@@ -1026,7 +1067,7 @@ function DesktopConference({
   }, [isMiniWidth])
 
   const updateDesktopCarouselNavigationState = useCallback(() => {
-    if (isMiniWidth) {
+    if (isMiniWidth || desktopCarouselOrientation !== 'horizontal') {
       setDesktopCarouselOverflow(false)
       setDesktopCarouselCanPrev(false)
       setDesktopCarouselCanNext(false)
@@ -1059,7 +1100,7 @@ function DesktopConference({
     setDesktopCarouselOverflow(overflow)
     setDesktopCarouselCanPrev(canPrev)
     setDesktopCarouselCanNext(canNext)
-  }, [isMiniWidth])
+  }, [desktopCarouselOrientation, isMiniWidth])
 
   useEffect(() => {
     if (!isMiniWidth) {
@@ -1106,7 +1147,7 @@ function DesktopConference({
   }, [carouselTracks.length, focusTrack, isMiniWidth, updateMiniCarouselNavigationState])
 
   useEffect(() => {
-    if (isMiniWidth) {
+    if (isMiniWidth || desktopCarouselOrientation !== 'horizontal') {
       setDesktopCarouselOverflow(false)
       setDesktopCarouselCanPrev(false)
       setDesktopCarouselCanNext(false)
@@ -1158,7 +1199,7 @@ function DesktopConference({
       resizeObserver?.disconnect()
       mutationObserver.disconnect()
     }
-  }, [carouselTracks.length, focusTrack, isMiniWidth, updateDesktopCarouselNavigationState])
+  }, [carouselTracks.length, desktopCarouselOrientation, focusTrack, isMiniWidth, updateDesktopCarouselNavigationState])
 
   const scrollMiniCarousel = useCallback((direction: 'prev' | 'next') => {
     if (!canNavigateMiniCarousel) return
@@ -1222,7 +1263,7 @@ function DesktopConference({
             <div className={focusLayoutWrapperClassName}>
               <FocusLayoutContainer>
                 <div className={carouselRegionClassName}>
-                  <CarouselLayout tracks={carouselTracks} orientation={isMiniWidth ? 'vertical' : 'horizontal'}>
+                  <CarouselLayout tracks={carouselTracks} orientation={desktopCarouselOrientation}>
                     <AvatarParticipantTile resolveParticipantAvatar={resolveParticipantAvatar} />
                   </CarouselLayout>
                   {canNavigateDesktopCarousel ? (
@@ -1548,6 +1589,9 @@ export default function LiveVideoStage(props: Props) {
           --desktop-vc-carousel-inline-inset: 10px;
           --desktop-vc-carousel-top-padding: 4px;
           --desktop-vc-carousel-bottom-padding: 8px;
+          --desktop-vc-focus-stack-gap: 4px;
+          --desktop-vc-focus-carousel-bottom-padding: 2px;
+          --desktop-vc-centered-tile-size: 132px;
           --desktop-vc-carousel-first-item-top: 4px;
           --vc-bg-0: #05070a;
           --vc-bg-1: #0b0f14;
@@ -1817,6 +1861,9 @@ export default function LiveVideoStage(props: Props) {
             --desktop-vc-carousel-inline-inset: 8px;
             --desktop-vc-carousel-top-padding: 4px;
             --desktop-vc-carousel-bottom-padding: 6px;
+            --desktop-vc-focus-stack-gap: 3px;
+            --desktop-vc-focus-carousel-bottom-padding: 1px;
+            --desktop-vc-centered-tile-size: 108px;
             --desktop-vc-carousel-first-item-top: 4px;
           }
           .desktop-vc-shell .desktop-vc-header {
@@ -1882,19 +1929,19 @@ export default function LiveVideoStage(props: Props) {
           padding-bottom: var(--desktop-vc-carousel-bottom-padding);
         }
         .desktop-vc-shell .lk-focus-layout {
-          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-          grid-template-rows: minmax(0, 1fr);
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
           align-items: stretch;
-          gap: var(--desktop-vc-carousel-bottom-padding);
+          gap: var(--desktop-vc-focus-stack-gap);
         }
         .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage {
-          order: 1;
-          grid-column: 2;
-          grid-row: 1;
+          order: 2;
+          grid-column: 1;
+          grid-row: 2;
           min-height: 0;
         }
         .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region {
-          order: 2;
+          order: 1;
           grid-column: 1;
           grid-row: 1;
           position: relative;
@@ -1902,7 +1949,7 @@ export default function LiveVideoStage(props: Props) {
           width: 100%;
           margin-inline: 0;
           padding-top: var(--desktop-vc-carousel-top-padding);
-          padding-bottom: var(--desktop-vc-carousel-bottom-padding);
+          padding-bottom: var(--desktop-vc-focus-carousel-bottom-padding);
           min-height: 0;
         }
         .desktop-vc-shell .lk-focus-layout > .desktop-vc-carousel-region > .lk-carousel[data-lk-orientation='horizontal'] {
@@ -1918,7 +1965,21 @@ export default function LiveVideoStage(props: Props) {
           display: none;
         }
         .desktop-vc-shell .desktop-vc-carousel-region--centered > .lk-carousel[data-lk-orientation='horizontal'] {
+          width: fit-content;
+          max-width: 100%;
+          margin-inline: auto;
           justify-content: center;
+          overflow: hidden;
+        }
+        .desktop-vc-shell .desktop-vc-carousel-region--centered {
+          width: fit-content;
+          max-width: 100%;
+          justify-self: center;
+        }
+        .desktop-vc-shell .desktop-vc-carousel-region--centered > .lk-carousel[data-lk-orientation='horizontal'] > * {
+          width: var(--desktop-vc-centered-tile-size);
+          min-width: var(--desktop-vc-centered-tile-size);
+          max-width: var(--desktop-vc-centered-tile-size);
         }
         .desktop-vc-shell .desktop-vc-carousel-nav {
           position: absolute;
@@ -1968,20 +2029,6 @@ export default function LiveVideoStage(props: Props) {
           grid-column: 1;
           grid-row: 2;
         }
-        @media (min-width: 1100px) and (min-aspect-ratio: 7/4) {
-          .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout {
-            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-            grid-template-rows: minmax(0, 1fr);
-          }
-          .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout > .desktop-vc-carousel-region {
-            grid-column: 1;
-            grid-row: 1;
-          }
-          .desktop-vc-shell .desktop-vc-focus-layout--screenshare .lk-focus-layout > .desktop-vc-focus-stage {
-            grid-column: 2;
-            grid-row: 1;
-          }
-        }
         .desktop-vc-shell .desktop-vc-focus-stage,
         .desktop-vc-shell .desktop-vc-focus-stage > .lk-participant-tile {
           width: 100%;
@@ -2005,7 +2052,7 @@ export default function LiveVideoStage(props: Props) {
             grid-template-columns: minmax(0, 1fr);
             grid-template-rows: auto minmax(0, 1fr);
             align-content: stretch;
-            gap: var(--desktop-vc-carousel-bottom-padding);
+            gap: var(--desktop-vc-focus-stack-gap);
           }
           .desktop-vc-shell .lk-focus-layout > .desktop-vc-focus-stage {
             grid-column: auto;
