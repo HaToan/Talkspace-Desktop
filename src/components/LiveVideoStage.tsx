@@ -1030,6 +1030,104 @@ function DesktopConference({
     !isMiniWidth && !desktopCarouselOverflow ? ' desktop-vc-carousel-region--centered' : ''
   }`
 
+  const clearFocusStageAmbientBackdrop = useCallback(() => {
+    const root = conferenceRef.current
+    if (!root) return
+
+    const focusStage = root.querySelector<HTMLElement>('.desktop-vc-focus-stage')
+    if (!focusStage) return
+
+    focusStage
+      .querySelectorAll<HTMLVideoElement>('video.desktop-vc-ambient-video')
+      .forEach((ambientVideo) => ambientVideo.remove())
+    focusStage
+      .querySelectorAll<HTMLVideoElement>('video.desktop-vc-main-video')
+      .forEach((mainVideo) => mainVideo.classList.remove('desktop-vc-main-video'))
+    focusStage
+      .querySelectorAll<HTMLElement>('.desktop-vc-focus-video-stack')
+      .forEach((stack) => stack.classList.remove('desktop-vc-focus-video-stack'))
+  }, [])
+
+  const syncFocusStageAmbientBackdrop = useCallback(() => {
+    const root = conferenceRef.current
+    if (!root) return
+
+    const focusStage = root.querySelector<HTMLElement>('.desktop-vc-focus-stage')
+    if (!focusStage) return
+
+    if (!isScreenShareFocused) {
+      clearFocusStageAmbientBackdrop()
+      return
+    }
+
+    const mainVideos = focusStage.querySelectorAll<HTMLVideoElement>(
+      'video.lk-participant-media-video:not(.desktop-vc-ambient-video)',
+    )
+
+    mainVideos.forEach((mainVideo) => {
+      const frame = mainVideo.parentElement
+      if (!frame) return
+
+      frame.classList.add('desktop-vc-focus-video-stack')
+
+      let ambientVideo: HTMLVideoElement | null = null
+      for (const child of Array.from(frame.children)) {
+        if (child instanceof HTMLVideoElement && child.classList.contains('desktop-vc-ambient-video')) {
+          ambientVideo = child
+          break
+        }
+      }
+
+      if (!ambientVideo) {
+        ambientVideo = document.createElement('video')
+        ambientVideo.className = 'lk-participant-media-video desktop-vc-ambient-video'
+        ambientVideo.autoplay = true
+        ambientVideo.muted = true
+        ambientVideo.playsInline = true
+        ambientVideo.setAttribute('aria-hidden', 'true')
+        frame.insertBefore(ambientVideo, mainVideo)
+      }
+
+      const sourceObject = mainVideo.srcObject ?? null
+      if (ambientVideo.srcObject !== sourceObject) {
+        ambientVideo.srcObject = sourceObject
+      }
+
+      if (mainVideo.poster && ambientVideo.poster !== mainVideo.poster) {
+        ambientVideo.poster = mainVideo.poster
+      }
+
+      if (ambientVideo.paused) {
+        void ambientVideo.play().catch(() => {
+          // Ignore autoplay restrictions for ambient layer.
+        })
+      }
+
+      mainVideo.classList.add('desktop-vc-main-video')
+    })
+
+    focusStage
+      .querySelectorAll<HTMLVideoElement>('video.desktop-vc-ambient-video')
+      .forEach((ambientVideo) => {
+        const frame = ambientVideo.parentElement
+        if (!frame) {
+          ambientVideo.remove()
+          return
+        }
+        const mainVideo = frame.querySelector<HTMLVideoElement>(
+          'video.lk-participant-media-video:not(.desktop-vc-ambient-video)',
+        )
+        if (!mainVideo) {
+          ambientVideo.remove()
+          frame.classList.remove('desktop-vc-focus-video-stack')
+          return
+        }
+        if (ambientVideo.srcObject !== mainVideo.srcObject) {
+          ambientVideo.srcObject = mainVideo.srcObject ?? null
+        }
+      })
+  }, [clearFocusStageAmbientBackdrop, isScreenShareFocused])
+
   const updateMiniCarouselNavigationState = useCallback(() => {
     if (!isMiniWidth) {
       setMiniCarouselOverflow(false)
@@ -1200,6 +1298,28 @@ function DesktopConference({
       mutationObserver.disconnect()
     }
   }, [carouselTracks.length, desktopCarouselOrientation, focusTrack, isMiniWidth, updateDesktopCarouselNavigationState])
+
+  useEffect(() => {
+    const root = conferenceRef.current
+    if (!root) return
+
+    const mutationObserver = new MutationObserver(() => {
+      syncFocusStageAmbientBackdrop()
+    })
+    mutationObserver.observe(root, { childList: true, subtree: true })
+
+    const intervalId = window.setInterval(() => {
+      syncFocusStageAmbientBackdrop()
+    }, 900)
+
+    syncFocusStageAmbientBackdrop()
+
+    return () => {
+      mutationObserver.disconnect()
+      window.clearInterval(intervalId)
+      clearFocusStageAmbientBackdrop()
+    }
+  }, [clearFocusStageAmbientBackdrop, syncFocusStageAmbientBackdrop])
 
   const scrollMiniCarousel = useCallback((direction: 'prev' | 'next') => {
     if (!canNavigateMiniCarousel) return
@@ -1591,7 +1711,9 @@ export default function LiveVideoStage(props: Props) {
           --desktop-vc-carousel-bottom-padding: 8px;
           --desktop-vc-focus-stack-gap: 4px;
           --desktop-vc-focus-carousel-bottom-padding: 2px;
-          --desktop-vc-centered-tile-size: 132px;
+          --desktop-vc-centered-tile-size: 128px;
+          --desktop-vc-carousel-gap-size: 10px;
+          --desktop-vc-carousel-tile-max-size: 176px;
           --desktop-vc-carousel-first-item-top: 4px;
           --vc-bg-0: #05070a;
           --vc-bg-1: #0b0f14;
@@ -1863,7 +1985,9 @@ export default function LiveVideoStage(props: Props) {
             --desktop-vc-carousel-bottom-padding: 6px;
             --desktop-vc-focus-stack-gap: 3px;
             --desktop-vc-focus-carousel-bottom-padding: 1px;
-            --desktop-vc-centered-tile-size: 108px;
+            --desktop-vc-centered-tile-size: 102px;
+            --desktop-vc-carousel-gap-size: 8px;
+            --desktop-vc-carousel-tile-max-size: 132px;
             --desktop-vc-carousel-first-item-top: 4px;
           }
           .desktop-vc-shell .desktop-vc-header {
@@ -2191,20 +2315,44 @@ export default function LiveVideoStage(props: Props) {
           z-index: 1;
         }
         .desktop-vc-shell .lk-carousel {
+          --lk-grid-gap: var(--desktop-vc-carousel-gap-size);
           width: 100%;
-          padding: 6px;
+          padding: 8px;
+          gap: var(--desktop-vc-carousel-gap-size);
           min-height: 110px;
           max-height: 156px;
           overflow-x: auto;
           overflow-y: hidden;
+          position: relative;
+          isolation: isolate;
           border-radius: 18px;
-          border: 1px solid var(--vc-border);
+          border: 1px solid rgba(168, 186, 212, 0.18);
           background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(255, 255, 255, 0)),
-            rgba(11, 15, 20, 0.78);
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+            radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015) 40%, rgba(20, 24, 32, 0) 74%),
+            linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+            rgba(20, 24, 32, 0.55);
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.06),
+            0 10px 26px rgba(0, 0, 0, 0.24);
+          backdrop-filter: blur(8px) saturate(1.06);
+          -webkit-backdrop-filter: blur(8px) saturate(1.06);
+        }
+        .desktop-vc-shell .lk-carousel::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          z-index: 0;
+          background-image:
+            radial-gradient(rgba(255, 255, 255, 0.03) 0.7px, transparent 0.9px),
+            radial-gradient(rgba(255, 255, 255, 0.022) 0.6px, transparent 0.85px);
+          background-size: 3px 3px, 5px 5px;
+          background-position: 0 0, 1px 2px;
+          opacity: 0.42;
         }
         .desktop-vc-shell .lk-carousel > * {
+          position: relative;
+          z-index: 1;
           min-width: 0;
           aspect-ratio: 1 / 1;
         }
@@ -2213,7 +2361,7 @@ export default function LiveVideoStage(props: Props) {
             (100% - var(--lk-grid-gap) * (var(--lk-max-visible-tiles, 2) - 1)) /
             var(--lk-max-visible-tiles, 2)
           );
-          max-width: 100%;
+          max-width: min(100%, var(--desktop-vc-carousel-tile-max-size));
         }
         .desktop-vc-shell .lk-participant-tile {
           border-radius: 20px;
@@ -2236,6 +2384,46 @@ export default function LiveVideoStage(props: Props) {
         .desktop-vc-shell .lk-participant-media-video,
         .desktop-vc-shell .lk-participant-placeholder {
           border-radius: 16px;
+        }
+        .desktop-vc-shell .desktop-vc-focus-stage .desktop-vc-focus-video-stack {
+          position: relative;
+          overflow: hidden;
+          isolation: isolate;
+          background: #04070d;
+        }
+        .desktop-vc-shell .desktop-vc-focus-stage .desktop-vc-focus-video-stack::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          z-index: 1;
+          pointer-events: none;
+          background:
+            linear-gradient(
+              90deg,
+              rgba(3, 5, 9, 0.18) 0%,
+              rgba(3, 5, 9, 0.01) 20%,
+              rgba(3, 5, 9, 0.01) 80%,
+              rgba(3, 5, 9, 0.18) 100%
+            ),
+            radial-gradient(circle at center, rgba(8, 12, 18, 0) 58%, rgba(6, 8, 12, 0.24) 100%);
+        }
+        .desktop-vc-shell .desktop-vc-focus-stage .desktop-vc-ambient-video {
+          position: absolute;
+          inset: -8%;
+          width: 116%;
+          height: 116%;
+          object-fit: cover;
+          filter: blur(14px) saturate(1.06) brightness(0.74);
+          transform: scale(1.02);
+          opacity: 0.88;
+          z-index: 0;
+          pointer-events: none;
+        }
+        .desktop-vc-shell .desktop-vc-focus-stage .desktop-vc-main-video {
+          position: relative;
+          z-index: 2;
+          object-fit: contain;
+          background: transparent;
         }
         .desktop-vc-shell .lk-participant-placeholder {
           background:
