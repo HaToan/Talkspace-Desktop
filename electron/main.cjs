@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell, desktopCapturer, dialog, webContents, screen, clipboard } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const { execFile } = require('child_process')
 
 const loadDotenvFile = (filePath) => {
   if (!fs.existsSync(filePath)) return
@@ -202,7 +203,7 @@ const enterConferenceShareMode = (conferenceWindow, options = {}) => {
     Math.min(Math.max(DEFAULT_SHARE_MODE_HEIGHT, currentBounds.height), workArea.height - 92),
   )
   const targetX = workArea.x + workArea.width - targetWidth - 10
-  const targetY = workArea.y + 72
+  const targetY = workArea.y + 8
 
   conferenceWindow.setMinimumSize(280, 300)
   conferenceWindow.setBounds(
@@ -634,6 +635,75 @@ const openPrejoinWindow = async (parentWindow, payload = {}) => {
   })
 }
 
+const focusSourceWindow = (sourceId, conferenceWindow = null) => {
+  if (!sourceId) return
+
+  // Determine work area from the conference window's display, or fall back to primary
+  let wa = screen.getPrimaryDisplay().workArea
+  let confX = null
+
+  // Determine work area from the conference window's display
+  if (conferenceWindow && !conferenceWindow.isDestroyed()) {
+    const confDisplay = screen.getDisplayMatching(conferenceWindow.getBounds())
+    wa = confDisplay.workArea
+  }
+
+  // Compute where enterMiniMode will place the conference window (right edge, 250px wide)
+  // so we can position the selected window to avoid overlapping it.
+  const miniWidth = 250
+  const miniMargin = 16
+  confX = wa.x + wa.width - miniWidth - miniMargin
+
+  // Max width the selected window can use without overlapping the conference window
+  const gap = 12
+  const maxAllowedWidth = confX !== null ? confX - wa.x - gap : wa.width
+  const targetX = wa.x
+  const targetY = wa.y
+
+  // Try to focus one of our own Electron windows first
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    try {
+      const winSourceId =
+        typeof win.getMediaSourceId === 'function' ? win.getMediaSourceId() : ''
+      if (winSourceId && winSourceId === sourceId) {
+        if (win.isMinimized()) win.restore()
+        if (win.isMaximized()) win.unmaximize()
+        if (win.isFullScreen()) win.setFullScreen(false)
+        const cur = win.getBounds()
+        // Keep original size; only constrain width if it would overlap the conference window
+        win.setBounds({ x: targetX, y: targetY, width: Math.min(cur.width, maxAllowedWidth), height: cur.height }, true)
+        win.focus()
+        return
+      }
+    } catch {
+      // skip
+    }
+  }
+
+  // On Windows, extract the HWND from the source ID (format: window:<hwnd_decimal>:0),
+  // restore + move to left edge keeping original size (SWP_NOSIZE), then bring to front.
+  if (process.platform === 'win32' && sourceId.startsWith('window:')) {
+    const match = sourceId.match(/^window:(\d+):/)
+    if (match) {
+      const hwndValue = match[1]
+      const script = [
+        `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class WF { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr i, int x, int y, int cx, int cy, uint f); }'`,
+        `[WF]::ShowWindow([IntPtr]${hwndValue}, 9)`,
+        // SWP_NOSIZE (0x0001) | SWP_SHOWWINDOW (0x0040) — move only, keep current size
+        `[WF]::SetWindowPos([IntPtr]${hwndValue}, [IntPtr]0, ${targetX}, ${targetY}, 0, 0, 0x0041)`,
+        `[WF]::SetForegroundWindow([IntPtr]${hwndValue})`,
+      ].join('; ')
+      execFile(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+        { timeout: 5000 },
+        () => {},
+      )
+    }
+  }
+}
+
 const openDesktopSourcePickerWindow = async (parentWindow) => {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -715,6 +785,12 @@ const openDesktopSourcePickerWindow = async (parentWindow) => {
       const latestSources = await listDesktopSources()
       const selected = latestSources.find((source) => source.id === selectedId) || null
       finish(selected)
+
+      // After the picker closes, bring the selected window to the front
+      // and reposition both the selected window (left) and conference window (top-right)
+      if (selectedId.startsWith('window:')) {
+        setTimeout(() => focusSourceWindow(selectedId, parentWindow), 250)
+      }
     }
 
     const onCancel = (_event, payload) => {
@@ -1118,7 +1194,7 @@ app.whenReady().then(() => {
     )
 
     let x = workArea.x + workArea.width - miniWidth - 16
-    let y = workArea.y + 16
+    let y = workArea.y + 8
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       const mainBounds = mainWindow.getBounds()
@@ -1126,7 +1202,7 @@ app.whenReady().then(() => {
       if (rightX + boundedMiniWidth <= workArea.x + workArea.width) {
         x = rightX
       }
-      y = mainBounds.y
+      y = workArea.y + 8
     }
 
     x = Math.max(workArea.x + 8, Math.min(x, workArea.x + workArea.width - boundedMiniWidth - 8))
