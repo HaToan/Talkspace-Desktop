@@ -597,6 +597,7 @@ const openPrejoinWindow = async (parentWindow, payload = {}) => {
           roomTitle: String(payload?.roomTitle || 'TalkSpace'),
           userInfo: payload?.userInfo || null,
           roomInfo: payload?.roomInfo || null,
+          canManageAudience: Boolean(payload?.canManageAudience),
           allowedJoinRoles: Array.isArray(payload?.allowedJoinRoles)
             ? payload.allowedJoinRoles
             : undefined,

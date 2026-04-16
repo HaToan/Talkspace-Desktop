@@ -75,6 +75,7 @@ declare global {
       openPrejoinWindow: (payload: {
         roomTitle: string
         joinAsAudience: boolean
+        canManageAudience?: boolean
         userInfo?: {
           name?: string
           username?: string
@@ -102,6 +103,7 @@ declare global {
           speakerDeviceId?: string
           cameraDeviceId?: string
           joinRole?: 'member' | 'listener' | 'host' | 'co_host'
+          audienceEnabled?: boolean
         }
       }) => Promise<{
         confirmed: boolean
@@ -113,6 +115,7 @@ declare global {
           speakerDeviceId?: string
           cameraDeviceId?: string
           joinRole?: 'member' | 'listener' | 'host' | 'co_host'
+          audienceEnabled?: boolean
         }
       }>
       openConferenceWindow: (payload: {

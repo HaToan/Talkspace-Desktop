@@ -129,10 +129,15 @@ export default function AuthScreen({
 
   const submitSupportRequest = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const phone = supportForm.phone.trim()
+    const phone = supportForm.phone.trim().replace(/\s+/g, '')
     const request = supportForm.message.trim()
     if (!phone || !request) {
       setError('Please fill all support fields before sending.')
+      setMessage('')
+      return
+    }
+    if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
+      setError('Phone number must include international code, for example: +84974345645')
       setMessage('')
       return
     }
@@ -253,12 +258,12 @@ export default function AuthScreen({
                     phone: event.target.value,
                   }))
                 }
-                placeholder="0974xxxxxx"
+                placeholder="+84974345645"
                 required
               />
             </label>
             <label>
-              Need support
+              Issue details
               <textarea
                 className="textarea"
                 value={supportForm.message}
@@ -268,7 +273,7 @@ export default function AuthScreen({
                     message: event.target.value,
                   }))
                 }
-                placeholder={'Contact: facebook/...\n:say something about your issue...'}
+                placeholder={'Contact: facebook/...\nMessage: describe your issue...'}
                 required
               />
             </label>

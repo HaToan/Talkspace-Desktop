@@ -71,6 +71,7 @@ type PrejoinDeviceSettings = {
   speakerDeviceId?: string
   cameraDeviceId?: string
   joinRole?: 'member' | 'listener' | 'host' | 'co_host'
+  audienceEnabled?: boolean
 }
 
 type LaunchConferencePayload = {
@@ -976,6 +977,12 @@ function App() {
     if (window.electronAPI?.openPrejoinWindow) {
       try {
         const roomCategory = room.categoryName || categoryById.get(room.categoryId)?.name || 'General'
+        const canManageAudience =
+          room.hostId === profile.id ||
+          room.spaceRole === 'host' ||
+          room.spaceRole === 'co_host' ||
+          profile.spaceRole === 'host' ||
+          profile.spaceRole === 'admin'
         const cachedJoinRole = prejoinSettings?.joinRole || prejoinSettingsByRoom[roomId]?.joinRole
         const initialJoinRole =
           (cachedJoinRole === 'member' || cachedJoinRole === 'listener') &&
@@ -985,6 +992,7 @@ function App() {
         const prejoinResult = await window.electronAPI.openPrejoinWindow({
           roomTitle: 'TalkSpace Prejoin',
           joinAsAudience: resolvedJoinAsAudience,
+          canManageAudience,
           userInfo: {
             name: profile.name,
             username: profile.username,
@@ -994,6 +1002,7 @@ function App() {
           initialSettings: {
             ...(prejoinSettings || prejoinSettingsByRoom[roomId]),
             joinRole: initialJoinRole,
+            audienceEnabled: room.audienceEnabled,
           },
           roomInfo: {
             title: room.title,
@@ -1013,10 +1022,36 @@ function App() {
           return null
         }
 
-        const rawFinalPrejoinSettings = prejoinResult.settings as PrejoinDeviceSettings | undefined
+        const rawFinalPrejoinSettings = prejoinResult.settings as
+          | (PrejoinDeviceSettings & { audienceEnabled?: boolean })
+          | undefined
+        const nextAudienceEnabled =
+          typeof rawFinalPrejoinSettings?.audienceEnabled === 'boolean'
+            ? rawFinalPrejoinSettings.audienceEnabled
+            : undefined
+        if (
+          typeof nextAudienceEnabled === 'boolean' &&
+          nextAudienceEnabled !== room.audienceEnabled
+        ) {
+          try {
+            const updatedRoom = await updateRoomApi(roomId, {
+              audienceEnabled: nextAudienceEnabled,
+            })
+            setRooms((prev) => prev.map((item) => (item.id === roomId ? updatedRoom : item)))
+            setMyRooms((prev) => prev.map((item) => (item.id === roomId ? updatedRoom : item)))
+          } catch (error: any) {
+            return getTalkspacesApiError(error)
+          }
+        }
+
         const finalPrejoinSettings = rawFinalPrejoinSettings
           ? {
-              ...rawFinalPrejoinSettings,
+              micEnabled: Boolean(rawFinalPrejoinSettings.micEnabled),
+              camEnabled: Boolean(rawFinalPrejoinSettings.camEnabled),
+              backgroundMode: rawFinalPrejoinSettings.backgroundMode,
+              microphoneDeviceId: rawFinalPrejoinSettings.microphoneDeviceId,
+              speakerDeviceId: rawFinalPrejoinSettings.speakerDeviceId,
+              cameraDeviceId: rawFinalPrejoinSettings.cameraDeviceId,
               joinRole: resolvedJoinRole,
             }
           : undefined
