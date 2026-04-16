@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listDesktopSources: () => ipcRenderer.invoke('media:list-desktop-sources'),
   pickDesktopSource: () => ipcRenderer.invoke('media:pick-desktop-source'),
   getCurrentWindowSource: () => ipcRenderer.invoke('media:get-current-window-source'),
+  getScreenSourceForAudio: () => ipcRenderer.invoke('media:get-screen-source-for-audio'),
   openPrejoinWindow: (payload) => ipcRenderer.invoke('prejoin:open', payload),
   openConferenceWindow: (payload) => ipcRenderer.invoke('conference:open-room', payload),
   closeCurrentWindow: () => ipcRenderer.invoke('window:close-current'),
@@ -24,7 +25,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isMaximizedCurrentWindow: () => ipcRenderer.invoke('window:is-maximized'),
   setCurrentWindowResizable: (resizable) =>
     ipcRenderer.invoke('window:set-resizable', { resizable: Boolean(resizable) }),
-  saveRecording: (payload) => ipcRenderer.invoke('recording:save', payload),
+  getRecordingFolder: () => ipcRenderer.invoke('recording:get-folder'),
+  chooseRecordingFolder: () => ipcRenderer.invoke('recording:choose-folder'),
+  openRecordingStream: (payload) => ipcRenderer.invoke('recording:open-stream', payload),
+  writeRecordingChunk: (payload) => ipcRenderer.invoke('recording:write-chunk', payload),
+  closeRecordingStream: (payload) => ipcRenderer.invoke('recording:close-stream', payload),
+  convertBackground: (payload) => ipcRenderer.invoke('recording:convert-background', payload),
+  onConvertDone: (cb) => {
+    const fn = (_e, result) => cb(result)
+    ipcRenderer.on('recording:convert-done', fn)
+    return () => ipcRenderer.removeListener('recording:convert-done', fn)
+  },
 
   // Auto-updater
   checkForUpdates: () => ipcRenderer.invoke('updater:check-for-updates'),

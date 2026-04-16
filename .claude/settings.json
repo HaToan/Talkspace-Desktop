@@ -17,7 +17,14 @@
       "Bash(node -e \"var fs=require\\('fs'\\);var c=fs.readFileSync\\('node_modules/@livekit/components-react/dist/index.js','utf8'\\);var m=c.match\\(/lk-button[-a-z]*/g\\)||[];var u={};m.forEach\\(function\\(x\\){u[x]=1;}\\);Object.keys\\(u\\).forEach\\(function\\(k\\){console.log\\(k\\);}\\)\")",
       "Bash(node -e \"process.stdout.write\\('hello\\\\n'\\)\")",
       "Bash(node -e \"var c=require\\('fs'\\).readFileSync\\('node_modules/@livekit/components-react/dist/index.js','utf8'\\);process.stdout.write\\(c.length+'\\\\n'\\)\")",
-      "Bash(node -e \"var c=require\\('fs'\\).readFileSync\\('node_modules/@livekit/components-react/dist/shared-iyASaIaj.js','utf8'\\);var m=c.match\\(/lk-button[-a-z]*/g\\)||[];var u={};m.forEach\\(function\\(x\\){u[x]=1;}\\);process.stdout.write\\(Object.keys\\(u\\).join\\('\\\\n'\\)+'\\\\n'\\)\")"
+      "Bash(node -e \"var c=require\\('fs'\\).readFileSync\\('node_modules/@livekit/components-react/dist/shared-iyASaIaj.js','utf8'\\);var m=c.match\\(/lk-button[-a-z]*/g\\)||[];var u={};m.forEach\\(function\\(x\\){u[x]=1;}\\);process.stdout.write\\(Object.keys\\(u\\).join\\('\\\\n'\\)+'\\\\n'\\)\")",
+      "Bash(ls electron-builder*)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\('build', {}\\), indent=2\\)\\)\")",
+      "Bash(node -e \"console.log\\(require\\('ffmpeg-static'\\)\\)\")",
+      "Bash(awk 'NR>100 && NR<130')",
+      "Bash(node -e \"const p = require\\('./node_modules/ffmpeg-static'\\); console.log\\(p\\); const fs = require\\('fs'\\); console.log\\('exists:', fs.existsSync\\(p\\)\\)\")",
+      "Bash(\"d:/vxspace/talkspace-desktop/node_modules/ffmpeg-static/ffmpeg.exe\" -version)",
+      "Bash(grep -v \"css\\\\|CSS\\\\|style\\\\|Style\\\\|\\\\\\\\.desktop\\\\|className.*desktop\")"
     ]
   }
 }

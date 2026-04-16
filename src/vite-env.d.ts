@@ -64,6 +64,7 @@ declare global {
           }
         | null
       >
+      getScreenSourceForAudio: () => Promise<{ id: string } | null>
       getCurrentWindowSource: () => Promise<
         | {
             id: string
@@ -189,16 +190,33 @@ declare global {
         skipped?: string
         error?: string
       }>
-      saveRecording: (payload: {
-        bytes: Uint8Array
-        defaultFileName: string
-        extension?: 'webm' | 'mp4'
-      }) => Promise<{
+      getRecordingFolder: () => Promise<string | null>
+      chooseRecordingFolder: () => Promise<{ success: boolean; cancelled?: boolean; folder?: string }>
+      openRecordingStream: (payload: {
+        sessionId: string
+        folder: string
+        roomSlug: string
+        filename: string
+      }) => Promise<{ success: boolean; webmPath?: string; error?: string }>
+      writeRecordingChunk: (payload: { sessionId: string; bytes: Uint8Array }) => Promise<{
         success: boolean
-        cancelled?: boolean
-        filePath?: string
         error?: string
       }>
+      closeRecordingStream: (payload: { sessionId: string }) => Promise<{
+        success: boolean
+        webmPath?: string
+        error?: string
+      }>
+      convertBackground: (payload: { webmPath: string; isH264: boolean }) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      onConvertDone: (cb: (result: {
+        success: boolean
+        mp4Path?: string
+        webmPath?: string
+        error?: string
+      }) => void) => () => void
     }
   }
 }

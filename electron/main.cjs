@@ -1,7 +1,20 @@
 const { app, BrowserWindow, ipcMain, shell, desktopCapturer, dialog, webContents, screen, clipboard } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 const { execFile } = require('child_process')
+
+// Resolve ffmpeg binary — works in dev and in packaged (asar.unpacked) builds
+const resolveFfmpegPath = () => {
+  try {
+    const raw = require('ffmpeg-static')
+    if (!raw) return null
+    // In packaged apps the binary is extracted to app.asar.unpacked
+    return app.isPackaged ? raw.replace('app.asar', 'app.asar.unpacked') : raw
+  } catch {
+    return null
+  }
+}
 const { autoUpdater } = require('electron-updater')
 
 const loadDotenvFile = (filePath) => {
@@ -1168,6 +1181,20 @@ app.whenReady().then(() => {
     return null
   })
 
+  // Returns a primary screen source ID for loopback audio capture (no dialog)
+  ipcMain.handle('media:get-screen-source-for-audio', async () => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 1, height: 1 },
+        fetchWindowIcons: false,
+      })
+      return sources[0] ? { id: sources[0].id } : null
+    } catch {
+      return null
+    }
+  })
+
   ipcMain.handle('prejoin:open', async (_event, payload) => {
     const activeWindow = BrowserWindow.getFocusedWindow() || mainWindow
     return await openPrejoinWindow(activeWindow, payload)
@@ -1429,46 +1456,103 @@ app.whenReady().then(() => {
     return { isMaximized: false, isFullScreen: false }
   })
 
-  ipcMain.handle('recording:save', async (_event, payload) => {
+  // ── Recording: stream chunks directly to chosen folder on disk ───────────
+  // sessionId → { ws: WriteStream, webmPath: string }
+  const activeRecordingStreams = new Map()
+  let preferredRecordingFolder = null
+
+  ipcMain.handle('recording:get-folder', () => preferredRecordingFolder)
+
+  ipcMain.handle('recording:choose-folder', async (event) => {
+    const senderWin = BrowserWindow.fromWebContents(event.sender) || undefined
+    const result = await dialog.showOpenDialog(senderWin, {
+      title: 'Choose recording save folder',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: preferredRecordingFolder || app.getPath('videos'),
+    })
+    if (result.canceled || !result.filePaths.length) return { success: false, cancelled: true }
+    preferredRecordingFolder = result.filePaths[0]
+    return { success: true, folder: preferredRecordingFolder }
+  })
+
+  ipcMain.handle('recording:open-stream', (_event, { sessionId, folder, roomSlug, filename }) => {
     try {
-      const bytes = payload?.bytes
-      if (!bytes || typeof bytes.length !== 'number' || bytes.length === 0) {
-        return { success: false, error: 'No recording data.' }
-      }
-
-      const extension = payload?.extension === 'mp4' ? 'mp4' : 'webm'
-      const defaultNameSeed = toSafeFileName(payload?.defaultFileName)
-      const defaultFileName = defaultNameSeed.endsWith(`.${extension}`)
-        ? defaultNameSeed
-        : `${defaultNameSeed}.${extension}`
-
-      const defaultDirectory = app.getPath('videos') || app.getPath('documents')
-      const saveResult = await dialog.showSaveDialog({
-        title: 'Save meeting recording',
-        defaultPath: path.join(defaultDirectory, defaultFileName),
-        buttonLabel: 'Save',
-        filters:
-          extension === 'mp4'
-            ? [{ name: 'MP4 video', extensions: ['mp4'] }]
-            : [{ name: 'WebM video', extensions: ['webm'] }],
-      })
-
-      if (saveResult.canceled || !saveResult.filePath) {
-        return { success: false, cancelled: true }
-      }
-
-      const output = Buffer.from(bytes)
-      await fs.promises.writeFile(saveResult.filePath, output)
-      return {
-        success: true,
-        filePath: saveResult.filePath,
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: error?.message || 'Failed to save recording.',
-      }
+      const dir = path.join(folder, roomSlug)
+      fs.mkdirSync(dir, { recursive: true })
+      const webmPath = path.join(dir, filename)
+      const ws = fs.createWriteStream(webmPath)
+      ws.on('error', () => activeRecordingStreams.delete(sessionId))
+      activeRecordingStreams.set(sessionId, { ws, webmPath })
+      return { success: true, webmPath }
+    } catch (err) {
+      return { success: false, error: err.message }
     }
+  })
+
+  ipcMain.handle('recording:write-chunk', async (_event, { sessionId, bytes }) => {
+    const rec = activeRecordingStreams.get(sessionId)
+    if (!rec) return { success: false, error: 'No active stream.' }
+    try {
+      await new Promise((resolve, reject) =>
+        rec.ws.write(Buffer.from(bytes), (err) => (err ? reject(err) : resolve()))
+      )
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('recording:close-stream', async (_event, { sessionId }) => {
+    const rec = activeRecordingStreams.get(sessionId)
+    if (!rec) return { success: false, error: 'No active stream.' }
+    activeRecordingStreams.delete(sessionId)
+    await new Promise((resolve) => rec.ws.end(resolve))
+    return { success: true, webmPath: rec.webmPath }
+  })
+
+  ipcMain.handle('recording:convert-background', (event, { webmPath, isH264 }) => {
+    const ffmpegBin = resolveFfmpegPath()
+    if (!ffmpegBin || !fs.existsSync(ffmpegBin)) {
+      return { success: false, error: 'FFmpeg not available.' }
+    }
+    const mp4Path = webmPath.replace(/\.webm$/i, '.mp4')
+    const senderWcId = event.sender.id
+
+    // H.264 input → just remux container (seconds). VP8/VP9 → re-encode (minutes).
+    const videoArgs = isH264
+      ? ['-c:v', 'copy']
+      : ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23']
+
+    // Fire-and-forget: convert in background, notify renderer when done
+    setImmediate(() => {
+      const proc = execFile(
+        ffmpegBin,
+        ['-i', webmPath,
+         '-map', '0:v:0', '-map', '0:a:0?',
+         ...videoArgs, '-movflags', '+faststart',
+         '-c:a', 'aac', '-b:a', '128k',
+         '-y', mp4Path],
+        { maxBuffer: 50 * 1024 * 1024 },
+        (err, _stdout, stderr) => {
+          const wc = webContents.fromId(senderWcId)
+          if (err) {
+            wc?.send('recording:convert-done', { success: false, error: stderr || err.message, webmPath })
+          } else {
+            fs.unlink(webmPath, () => {}) // delete source WebM after successful convert
+            wc?.send('recording:convert-done', { success: true, mp4Path })
+            if (wc && !wc.isDestroyed()) shell.showItemInFolder(mp4Path)
+          }
+        },
+      )
+      const timer = setTimeout(() => {
+        proc.kill()
+        const wc = webContents.fromId(senderWcId)
+        wc?.send('recording:convert-done', { success: false, error: 'FFmpeg timed out.', webmPath })
+      }, 10 * 60 * 1000)
+      proc.on('close', () => clearTimeout(timer))
+    })
+
+    return { success: true }
   })
 
   app.on('activate', () => {

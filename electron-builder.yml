@@ -6,6 +6,10 @@ directories:
 files:
   - dist/**/*
   - electron/**/*
+  - node_modules/ffmpeg-static/**/*
+
+asarUnpack:
+  - "**/node_modules/ffmpeg-static/**"
 
 win:
   target:

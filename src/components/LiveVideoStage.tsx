@@ -5,7 +5,6 @@ import {
   ChatIcon,
   ChatToggle,
   ConnectionStateToast,
-  DisconnectButton,
   FocusLayoutContainer,
   GearIcon,
   GridLayout,
@@ -28,6 +27,7 @@ import {
   useMaybeTrackRefContext,
   useParticipants,
   usePinnedTracks,
+  useRoomContext,
   useTracks,
 } from '@livekit/components-react'
 import { ConnectionState, LocalTrackPublication, Participant, Track } from 'livekit-client'
@@ -178,6 +178,52 @@ const getAvatarFromParticipantMetadata = (participant?: Participant | null) => {
 }
 
 const toCssUrl = (rawUrl: string) => `url("${encodeURI(rawUrl)}")`
+
+// ─── Recording ────────────────────────────────────────────────────────────────
+type RecordingQualityPreset = 'performance' | 'balanced' | 'quality'
+
+type RecordingQualityConfig = {
+  width: number
+  height: number
+  frameRate: number
+  videoBitsPerSecond: number
+  label: string
+}
+
+const RECORDING_QUALITY_CONFIGS: Record<RecordingQualityPreset, RecordingQualityConfig> = {
+  performance: { width: 1280, height: 720, frameRate: 30, videoBitsPerSecond: 6_000_000, label: 'Performance (720p30)' },
+  balanced: { width: 1920, height: 1080, frameRate: 30, videoBitsPerSecond: 12_000_000, label: 'Balanced (1080p30)' },
+  quality: { width: 1920, height: 1080, frameRate: 60, videoBitsPerSecond: 20_000_000, label: 'Quality (1080p60)' },
+}
+
+const getSupportedRecordingMimeType = (): { mimeType: string; isH264: boolean } => {
+  // Prefer H.264 — if supported, FFmpeg can remux in seconds instead of re-encoding
+  const h264Candidates = ['video/webm;codecs=h264,opus', 'video/webm;codecs=avc1,opus']
+  for (const c of h264Candidates) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c)) {
+      return { mimeType: c, isH264: true }
+    }
+  }
+  // Fallback to VP9/VP8 — will require full re-encode
+  const vpxCandidates = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+  for (const c of vpxCandidates) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c)) {
+      return { mimeType: c, isH264: false }
+    }
+  }
+  return { mimeType: '', isH264: false }
+}
+
+const buildRecordingFileName = () => {
+  const now = new Date()
+  const pad = (v: number) => String(v).padStart(2, '0')
+  const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+  const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  return `${date}-${time}.webm`
+}
+
+const slugifyRoomTitle = (title: string) =>
+  title.trim().replace(/[/\\:*?"<>|]+/g, '-').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'recording'
 
 function AvatarParticipantTile({
   resolveParticipantAvatar,
@@ -357,12 +403,22 @@ function SettingsPanel({
   isHost,
   audience,
   onPendingRequestCountChange,
+  onRecordingSettingsChange,
 }: {
   roomId?: string
   isHost: boolean
   audience: boolean
   onPendingRequestCountChange?: (count: number) => void
+  onRecordingSettingsChange?: (settings: { quality: RecordingQualityPreset }) => void
 }) {
+  // ── Recording settings (managed locally, surfaced via callback) ───────────
+  const [recordingQuality, setRecordingQuality] = useState<RecordingQualityPreset>('balanced')
+
+  const handleRecordingQualityChange = useCallback((quality: RecordingQualityPreset) => {
+    setRecordingQuality(quality)
+    onRecordingSettingsChange?.({ quality })
+  }, [onRecordingSettingsChange])
+
   // ── Background ────────────────────────────────────────────────────────────
   const { cameraTrack } = useLocalParticipant()
   type BgMode = 'none' | 'blur' | 'office' | 'nature'
@@ -707,6 +763,26 @@ function SettingsPanel({
           </>
         )}
 
+        {/* Recording */}
+        <>
+          <div className="desktop-vc-settings__group-label">Recording</div>
+          <section className="desktop-vc-settings__section">
+            <label>Quality</label>
+            <div className="desktop-vc-settings__radio-group">
+              {(['performance', 'balanced', 'quality'] as RecordingQualityPreset[]).map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  className={`desktop-vc-settings__radio-btn${recordingQuality === preset ? ' is-active' : ''}`}
+                  onClick={() => handleRecordingQualityChange(preset)}
+                >
+                  {RECORDING_QUALITY_CONFIGS[preset].label}
+                </button>
+              ))}
+            </div>
+          </section>
+        </>
+
       </div>
     </div>
   )
@@ -959,12 +1035,24 @@ function DesktopControlBar({
   onReact,
   chatBadgeCount,
   settingsBadgeCount,
+  recordingEnabled,
+  recordingPending,
+  recordingDuration,
+  onToggleRecording,
+  recordingQuality,
+  onLeaveRequested,
 }: {
   audience: boolean
   onMessage: (message: string) => void
   onReact: (code: string) => void
   chatBadgeCount: number
   settingsBadgeCount: number
+  recordingEnabled: boolean
+  recordingPending: boolean
+  recordingDuration: number
+  onToggleRecording: () => void
+  recordingQuality: RecordingQualityPreset
+  onLeaveRequested: () => void
 }) {
   const { localParticipant } = useLocalParticipant()
   const layoutContext = useMaybeLayoutContext()
@@ -999,6 +1087,41 @@ function DesktopControlBar({
         onDeviceError={(error) => onMessage(`Camera failed: ${error.message}`)}
       />
       <ElectronScreenShareButton canShare={canPublish} onMessage={onMessage} />
+      <div className="desktop-vc-record-wrap">
+        <button
+          className={`lk-button desktop-vc-record-btn${recordingEnabled ? ' desktop-vc-record-btn--active' : ''}`}
+          onClick={onToggleRecording}
+          disabled={recordingPending}
+          type="button"
+          aria-label={recordingEnabled ? 'Stop recording' : 'Record meeting'}
+          aria-pressed={recordingEnabled}
+        >
+          {recordingEnabled ? (
+            <>
+              <span className="desktop-vc-record-btn__dot" aria-hidden="true" />
+              <span className="desktop-vc-record-btn__timer">
+                {`${String(Math.floor(recordingDuration / 60)).padStart(2, '0')}:${String(recordingDuration % 60).padStart(2, '0')}`}
+              </span>
+            </>
+          ) : (
+            <svg
+              className="desktop-vc-record-btn__icon"
+              aria-hidden="true"
+              viewBox="0 0 20 20"
+              width="18"
+              height="18"
+              fill="currentColor"
+            >
+              <circle cx="10" cy="10" r="6" />
+            </svg>
+          )}
+          <span className="desktop-vc-record-btn__tooltip" role="tooltip">
+            {recordingEnabled
+              ? `Stop recording · ${RECORDING_QUALITY_CONFIGS[recordingQuality].label}`
+              : `Record · ${RECORDING_QUALITY_CONFIGS[recordingQuality].label}`}
+          </span>
+        </button>
+      </div>
       <div className="desktop-vc-reactions-wrap">
         {pickerOpen && (
           <ReactionsBar
@@ -1036,9 +1159,14 @@ function DesktopControlBar({
           <span className="desktop-vc-control-badge">{settingsBadgeCount > 99 ? '99+' : settingsBadgeCount}</span>
         )}
       </button>
-      <DisconnectButton title="Leave">
+      <button
+        className="lk-button lk-disconnect-button"
+        title="Leave"
+        type="button"
+        onClick={onLeaveRequested}
+      >
         <LeaveIcon />
-      </DisconnectButton>
+      </button>
     </div>
   )
 }
@@ -1179,7 +1307,37 @@ function DesktopConference({
   const [desktopCarouselCanPrev, setDesktopCarouselCanPrev] = useState(false)
   const [desktopCarouselCanNext, setDesktopCarouselCanNext] = useState(false)
   const [settingsBadgeCount, setSettingsBadgeCount] = useState(0)
+  const [recordingEnabled, setRecordingEnabled] = useState(false)
+  const [recordingPending, setRecordingPending] = useState(false)
+  const [recordingDuration, setRecordingDuration] = useState(0)
+  const [recordingQuality, setRecordingQuality] = useState<RecordingQualityPreset>('balanced')
   const conferenceRef = useRef<HTMLDivElement | null>(null)
+  const captureAreaRef = useRef<HTMLDivElement | null>(null)
+  const recordingStreamRef = useRef<MediaStream | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const recordingSessionIdRef = useRef<string | null>(null)
+  const currentWebmPathRef = useRef<string | null>(null)
+  const recordingIsH264Ref = useRef(false)
+  const recordingFolderRef = useRef<string | null>(null)
+  const pendingWritesRef = useRef<Promise<void>>(Promise.resolve())
+  const canvasCaptureRef = useRef<{
+    canvas: HTMLCanvasElement
+    rafId: number | null
+    screenShareVideoEl: HTMLVideoElement | null
+    windowVideo: HTMLVideoElement | null
+    windowStream: MediaStream | null
+    audioContext: AudioContext | null
+    capturedAudioTracks: MediaStreamTrack[]
+  } | null>(null)
+  const leaveAfterRecordingRef = useRef(false)
+  const room = useRoomContext()
+
+  useEffect(() => {
+    if (!recordingEnabled) { setRecordingDuration(0); return }
+    const id = setInterval(() => setRecordingDuration((d) => d + 1), 1000)
+    return () => clearInterval(id)
+  }, [recordingEnabled])
+
   const layoutContext = useCreateLayoutContext()
   const { reactions, sendReaction } = useReactions()
   const tracks = useTracks(
@@ -1724,6 +1882,368 @@ function DesktopConference({
     }
   }, [clearFocusStageAmbientBackdrop, syncFocusStageAmbientBackdrop])
 
+  // ─── Recording ───────────────────────────────────────────────────────────────
+  const stopRecordingStream = useCallback(() => {
+    if (canvasCaptureRef.current) {
+      if (canvasCaptureRef.current.rafId !== null) cancelAnimationFrame(canvasCaptureRef.current.rafId)
+      if (canvasCaptureRef.current.screenShareVideoEl) {
+        canvasCaptureRef.current.screenShareVideoEl.srcObject = null
+        canvasCaptureRef.current.screenShareVideoEl = null
+      }
+      if (canvasCaptureRef.current.windowVideo) {
+        canvasCaptureRef.current.windowVideo.pause()
+        canvasCaptureRef.current.windowVideo.srcObject = null
+        canvasCaptureRef.current.windowVideo = null
+      }
+      if (canvasCaptureRef.current.windowStream) {
+        canvasCaptureRef.current.windowStream.getTracks().forEach((t) => t.stop())
+        canvasCaptureRef.current.windowStream = null
+      }
+      canvasCaptureRef.current.capturedAudioTracks.forEach((t) => t.stop())
+      if (canvasCaptureRef.current.audioContext) {
+        void canvasCaptureRef.current.audioContext.close()
+        canvasCaptureRef.current.audioContext = null
+      }
+      canvasCaptureRef.current = null
+    }
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((t) => t.stop())
+      recordingStreamRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      const recorder = mediaRecorderRef.current
+      if (recorder && recorder.state === 'recording') recorder.stop()
+      stopRecordingStream()
+      mediaRecorderRef.current = null
+      recordingSessionIdRef.current = null
+      leaveAfterRecordingRef.current = false
+    }
+  }, [stopRecordingStream])
+
+  useEffect(() => {
+    const unsub = window.electronAPI?.onConvertDone?.((result) => {
+      if (result.success && result.mp4Path) {
+        const name = result.mp4Path.split(/[\\/]/).pop() ?? 'recording.mp4'
+        onMessage(`MP4 ready: ${name}`)
+      } else if (!result.success) {
+        onMessage(`MP4 conversion failed: ${result.error || 'unknown'}`)
+      }
+    })
+    return () => unsub?.()
+  }, [onMessage])
+
+  const persistRecording = useCallback(async () => {
+    const sessionId = recordingSessionIdRef.current
+    if (!sessionId) return
+    recordingSessionIdRef.current = null
+
+    // Wait for all in-flight chunk writes to complete before closing the stream
+    await pendingWritesRef.current
+
+    const closeResult = await window.electronAPI!.closeRecordingStream({ sessionId })
+    if (!closeResult.success || !closeResult.webmPath) {
+      onMessage(`Failed to save recording: ${closeResult.error || 'unknown'}`)
+      return
+    }
+
+    const webmPath = closeResult.webmPath
+    currentWebmPathRef.current = webmPath
+    const name = webmPath.split(/[\\/]/).pop() ?? 'recording.webm'
+    onMessage(`Saved: ${name} — converting to MP4…`)
+
+    // Background conversion — non-blocking
+    const convertResult = await window.electronAPI!.convertBackground({
+      webmPath,
+      isH264: recordingIsH264Ref.current,
+    })
+    if (!convertResult.success) {
+      onMessage(`MP4 conversion failed: ${convertResult.error || 'unknown'}`)
+    }
+  }, [onMessage])
+
+  const createRoomVideoOnlyStream = useCallback(async (quality: RecordingQualityConfig) => {
+    const captureRoot = captureAreaRef.current
+    if (!captureRoot) throw new Error('Room video area not available.')
+    const rect = captureRoot.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) throw new Error('Room video area is too small to record.')
+    if (!window.electronAPI?.getCurrentWindowSource) throw new Error('Desktop recording bridge is unavailable.')
+
+    // Pre-fetch the window source for the conference-tile path (camera feeds).
+    // desktopCapturer composites GPU-decoded WebRTC video correctly; canvas.drawImage
+    // on live WebRTC <video> elements returns black due to hardware overlay paths.
+    const windowSource = await window.electronAPI.getCurrentWindowSource()
+    if (!windowSource?.id) throw new Error('Unable to resolve meeting window source.')
+
+    const windowStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: windowSource.id,
+          maxWidth: 3840,
+          maxHeight: 2160,
+          maxFrameRate: quality.frameRate,
+        },
+      } as any,
+    })
+    const windowVideo = document.createElement('video')
+    windowVideo.muted = true; windowVideo.playsInline = true; windowVideo.autoplay = true
+    windowVideo.srcObject = windowStream
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error('Unable to initialize recording source.')), 4000)
+      const cleanup = () => {
+        window.clearTimeout(timer)
+        windowVideo.removeEventListener('loadedmetadata', onReady)
+        windowVideo.removeEventListener('error', onError)
+      }
+      const onReady = () => { cleanup(); resolve() }
+      const onError = () => { cleanup(); reject(new Error('Recording source failed to load.')) }
+      windowVideo.addEventListener('loadedmetadata', onReady)
+      windowVideo.addEventListener('error', onError)
+      void windowVideo.play().catch(onError)
+    })
+
+    const canvas = document.createElement('canvas')
+    canvas.width = quality.width; canvas.height = quality.height
+    const context = canvas.getContext('2d', { alpha: false })
+    if (!context) {
+      windowVideo.pause(); windowVideo.srcObject = null
+      windowStream.getTracks().forEach((t) => t.stop())
+      throw new Error('Canvas context unavailable.')
+    }
+
+    // ── Audio capture ────────────────────────────────────────────────────────
+    // Mix microphone + system audio (loopback) via Web Audio API.
+    // System audio requires chromeMediaSource:'desktop' which must be requested
+    // with a video constraint too (audio-only desktop capture triggers OS dialogs).
+    const capturedAudioTracks: MediaStreamTrack[] = []
+    let audioContext: AudioContext | null = null
+    let mixedAudioTrack: MediaStreamTrack | undefined
+
+    try {
+      audioContext = new AudioContext()
+      const dest = audioContext.createMediaStreamDestination()
+      let connected = false
+
+      // Microphone
+      try {
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+        micStream.getAudioTracks().forEach((t) => {
+          audioContext!.createMediaStreamSource(new MediaStream([t])).connect(dest)
+          capturedAudioTracks.push(t)
+        })
+        connected = true
+      } catch { /* mic unavailable */ }
+
+      // System audio (loopback) — must include a dummy video constraint
+      try {
+        const screenSrc = await window.electronAPI?.getScreenSourceForAudio?.()
+        if (screenSrc?.id) {
+          const sysStream = await navigator.mediaDevices.getUserMedia({
+            audio: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: screenSrc.id } } as any,
+            video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: screenSrc.id, maxWidth: 1, maxHeight: 1 } } as any,
+          })
+          sysStream.getVideoTracks().forEach((t) => t.stop()) // video not needed
+          sysStream.getAudioTracks().forEach((t) => {
+            audioContext!.createMediaStreamSource(new MediaStream([t])).connect(dest)
+            capturedAudioTracks.push(t)
+          })
+          connected = true
+        }
+      } catch { /* system audio unavailable */ }
+
+      if (connected) {
+        mixedAudioTrack = dest.stream.getAudioTracks()[0]
+      } else {
+        void audioContext.close()
+        audioContext = null
+      }
+    } catch { audioContext = null }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const capture = {
+      canvas,
+      rafId: null as number | null,
+      screenShareVideoEl: null as HTMLVideoElement | null,
+      windowVideo,
+      windowStream,
+      audioContext,
+      capturedAudioTracks,
+    }
+    canvasCaptureRef.current = capture
+
+    const drawFrame = () => {
+      context.fillStyle = '#071021'
+      context.fillRect(0, 0, quality.width, quality.height)
+
+      // When the local participant is sharing their screen the conference window
+      // enters mini mode. Capture the raw MediaStreamTrack directly (full quality,
+      // no re-compression artefacts from window compositing).
+      const screenSharePub = [...room.localParticipant.trackPublications.values()]
+        .find((pub) => pub.source === Track.Source.ScreenShare && pub.track)
+
+      if (screenSharePub?.track?.mediaStreamTrack) {
+        const mst = screenSharePub.track.mediaStreamTrack
+        if (!capture.screenShareVideoEl || capture.screenShareVideoEl.srcObject === null) {
+          const el = document.createElement('video')
+          el.muted = true; el.playsInline = true; el.autoplay = true
+          el.srcObject = new MediaStream([mst])
+          void el.play().catch(() => {})
+          capture.screenShareVideoEl = el
+        }
+        const el = capture.screenShareVideoEl
+        if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && el.videoWidth > 0) {
+          // Letterbox to preserve aspect ratio
+          const ar = el.videoWidth / el.videoHeight
+          const cAr = quality.width / quality.height
+          let dx = 0, dy = 0, dw = quality.width, dh = quality.height
+          if (ar > cAr) { dh = quality.width / ar; dy = (quality.height - dh) / 2 }
+          else { dw = quality.height * ar; dx = (quality.width - dw) / 2 }
+          context.drawImage(el, dx, dy, dw, dh)
+        }
+      } else {
+        // No screen share — clean up helper element and use window capture for tiles
+        if (capture.screenShareVideoEl) {
+          capture.screenShareVideoEl.srcObject = null
+          capture.screenShareVideoEl = null
+        }
+        if (windowVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          const areaRect = captureRoot.getBoundingClientRect()
+          // The control bar is position:fixed and visually overlays the bottom of
+          // captureAreaRef. Clip the crop to the top edge of the control bar so it
+          // never appears in the recording.
+          const controlBarEl = captureRoot.closest('.lk-video-conference')
+            ?.querySelector('.lk-control-bar')
+          const cropBottom = controlBarEl
+            ? Math.min(areaRect.bottom, controlBarEl.getBoundingClientRect().top)
+            : areaRect.bottom
+          const cropH = Math.max(2, cropBottom - areaRect.top)
+
+          const vw = Math.max(1, window.innerWidth || 1)
+          const vh = Math.max(1, window.innerHeight || 1)
+          const srcW = Math.max(1, windowVideo.videoWidth || quality.width)
+          const srcH = Math.max(1, windowVideo.videoHeight || quality.height)
+          const scaleX = srcW / vw; const scaleY = srcH / vh
+          const sx = Math.max(0, Math.floor(areaRect.left * scaleX))
+          const sy = Math.max(0, Math.floor(areaRect.top * scaleY))
+          const sw = Math.max(2, Math.min(srcW - sx, Math.floor(areaRect.width * scaleX)))
+          const sh = Math.max(2, Math.min(srcH - sy, Math.floor(cropH * scaleY)))
+          context.drawImage(windowVideo, sx, sy, sw, sh, 0, 0, quality.width, quality.height)
+        }
+      }
+
+      if (canvasCaptureRef.current) canvasCaptureRef.current.rafId = requestAnimationFrame(drawFrame)
+    }
+
+    capture.rafId = requestAnimationFrame(drawFrame)
+    const videoStream = canvas.captureStream(quality.frameRate)
+    if (mixedAudioTrack) {
+      return new MediaStream([...videoStream.getVideoTracks(), mixedAudioTrack])
+    }
+    return videoStream
+  }, [room])
+
+
+  const startRecording = useCallback(async () => {
+    if (recordingPending || recordingEnabled) return
+    setRecordingPending(true)
+    try {
+      // Ask for folder once per session
+      if (!recordingFolderRef.current && window.electronAPI?.getRecordingFolder) {
+        recordingFolderRef.current = await window.electronAPI.getRecordingFolder()
+      }
+      if (!recordingFolderRef.current && window.electronAPI?.chooseRecordingFolder) {
+        const folderResult = await window.electronAPI.chooseRecordingFolder()
+        if (!folderResult.success || !folderResult.folder) {
+          onMessage('Recording cancelled — no folder selected.')
+          setRecordingPending(false); return
+        }
+        recordingFolderRef.current = folderResult.folder
+      }
+      if (!recordingFolderRef.current) {
+        onMessage('Recording folder not available.'); setRecordingPending(false); return
+      }
+
+      const qualityConfig = RECORDING_QUALITY_CONFIGS[recordingQuality]
+      const stream = await createRoomVideoOnlyStream(qualityConfig)
+
+      if (!stream) { onMessage('Recording not supported in this environment.'); setRecordingPending(false); return }
+
+      const { mimeType, isH264 } = getSupportedRecordingMimeType()
+      recordingIsH264Ref.current = isH264
+      const recorderOpts: MediaRecorderOptions = { videoBitsPerSecond: qualityConfig.videoBitsPerSecond }
+      if (mimeType) recorderOpts.mimeType = mimeType
+
+      // Open file directly in chosen folder: {folder}/{room-slug}/{timestamp}.webm
+      const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const openResult = await window.electronAPI!.openRecordingStream({
+        sessionId,
+        folder: recordingFolderRef.current,
+        roomSlug: slugifyRoomTitle(roomTitle),
+        filename: buildRecordingFileName(),
+      })
+      if (!openResult.success) throw new Error(openResult.error || 'Failed to open recording stream.')
+      recordingSessionIdRef.current = sessionId
+      currentWebmPathRef.current = openResult.webmPath ?? null
+      pendingWritesRef.current = Promise.resolve()
+
+      const recorder = new MediaRecorder(stream, recorderOpts)
+      recordingStreamRef.current = stream; mediaRecorderRef.current = recorder
+
+      recorder.ondataavailable = (e) => {
+        if (e.data?.size > 0) {
+          // Chain writes sequentially so close-and-convert always runs after all chunks are flushed
+          pendingWritesRef.current = pendingWritesRef.current.then(async () => {
+            const bytes = new Uint8Array(await e.data.arrayBuffer())
+            await window.electronAPI!.writeRecordingChunk({ sessionId, bytes })
+          }).catch(() => {})
+        }
+      }
+      recorder.onerror = (e: any) => { onMessage(e?.error?.message || 'Recording failed.') }
+      recorder.onstop = () => {
+        setRecordingEnabled(false); setRecordingPending(false)
+        void persistRecording().finally(() => {
+          stopRecordingStream(); mediaRecorderRef.current = null
+          if (leaveAfterRecordingRef.current) {
+            leaveAfterRecordingRef.current = false
+            room.disconnect()
+          }
+        })
+      }
+      const videoTrack = stream.getVideoTracks()[0]
+      if (videoTrack) videoTrack.onended = () => { if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop() }
+
+      recorder.start(1000); setRecordingEnabled(true); setRecordingPending(false)
+    } catch (err: any) {
+      stopRecordingStream(); mediaRecorderRef.current = null
+      setRecordingEnabled(false); setRecordingPending(false)
+      onMessage(err?.message || 'Unable to start recording.')
+    }
+  }, [recordingPending, recordingEnabled, recordingQuality, roomTitle, createRoomVideoOnlyStream, persistRecording, stopRecordingStream, onMessage])
+
+  const stopRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder || recorder.state !== 'recording') return
+    setRecordingPending(true); recorder.stop()
+  }, [])
+
+  const toggleRecording = useCallback(() => {
+    if (recordingEnabled) { stopRecording(); return }
+    void startRecording()
+  }, [recordingEnabled, startRecording, stopRecording])
+
+  const handleLeaveRequested = useCallback(() => {
+    if (recordingEnabled || mediaRecorderRef.current?.state === 'recording') {
+      leaveAfterRecordingRef.current = true
+      stopRecording()
+    } else {
+      room.disconnect()
+    }
+  }, [recordingEnabled, stopRecording, room])
+
   const scrollMiniCarousel = useCallback((direction: 'prev' | 'next') => {
     if (!canNavigateMiniCarousel) return
     const root = conferenceRef.current
@@ -1810,6 +2330,7 @@ function DesktopConference({
       <div className="lk-video-conference desktop-vc-conference" ref={conferenceRef}>
         <DesktopMeetingHeader title={roomTitle} participantCount={tracks.length} />
         <div className="lk-video-conference-inner">
+          <div ref={captureAreaRef} className="desktop-vc-capture-area">
           {!focusTrack ? (
             <div className="lk-grid-layout-wrapper">
               <GridLayout tracks={tracks}>
@@ -1909,12 +2430,19 @@ function DesktopConference({
               </FocusLayoutContainer>
             </div>
           )}
+          </div>
           <DesktopControlBar
             audience={audience}
             onMessage={onMessage}
             onReact={sendReaction}
             chatBadgeCount={Number(widgetState.unreadMessages || 0)}
             settingsBadgeCount={settingsBadgeCount}
+            recordingEnabled={recordingEnabled}
+            recordingPending={recordingPending}
+            recordingDuration={recordingDuration}
+            onToggleRecording={toggleRecording}
+            recordingQuality={recordingQuality}
+            onLeaveRequested={handleLeaveRequested}
           />
         </div>
         <ReactionOverlay reactions={reactions} />
@@ -1927,6 +2455,9 @@ function DesktopConference({
             isHost={isHost}
             audience={audience}
             onPendingRequestCountChange={setSettingsBadgeCount}
+            onRecordingSettingsChange={({ quality }) => {
+              setRecordingQuality(quality)
+            }}
           />
         </div>
       </div>

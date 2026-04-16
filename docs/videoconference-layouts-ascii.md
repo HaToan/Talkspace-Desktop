@@ -72,6 +72,8 @@ Use case:
 - There is a `focusTrack`
 - Usually a participant camera feed
 
+
+
 ### 2.3 Screenshare Focus View - Participant Top
 
 Used when the pinned track is screen share and the participant strip is on top.
@@ -225,3 +227,28 @@ conference-window-root
 - The old `Mini meeting` layout has been removed.
 - Share screen now uses the normal stage and only changes the pinned/focused track.
 - `livekit-share-control-layout` still exists in CSS, but it is not currently rendered by JSX.
+
+
+### 6 Record with Share Screen + participart
+
+Used when recording with share Screen.
+
+```text
++-------------------------------------------------------------+
+| livekit-focus-wrapper                                        |
+|  +-------------------+  +----------------------------------+ |
+|  | CarouselLayout    |  | FocusLayout                      | |
+|  | +-----+           |  |                                  | |
+|  | |tile |           |  |  Share screen                    | |
+|  | +-----+           |  |                                  | |
+|  | +-----+           |  |                                  | |
+|  | |tile |           |  |                                  | |
+|  | +-----+           |  +----------------------------------+ |
+|  +-------------------+                                       |
++-------------------------------------------------------------+
+```
+
+Use case:
+
+- There is a `focusTrack`
+- Usually a participant camera feed

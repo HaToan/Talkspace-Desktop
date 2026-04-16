@@ -9,24 +9,28 @@ import {
   unwrapData,
 } from './http'
 
-const mapProfile = (raw: any, fallbackUsername?: string): UserProfile => ({
-  id: String(raw?.id ?? `local-${fallbackUsername ?? 'user'}`),
-  username: String(raw?.username ?? fallbackUsername ?? 'user'),
-  name: String(raw?.name ?? raw?.username ?? fallbackUsername ?? 'User'),
-  email: String(raw?.email ?? ''),
-  avatar:
-    typeof raw?.avatar === 'string' && raw.avatar.trim()
-      ? raw.avatar.trim()
-      : typeof raw?.picture === 'string' && raw.picture.trim()
-        ? raw.picture.trim()
-        : undefined,
-  spaceRole:
-    raw?.spaceRole === 'host' ||
-    raw?.spaceRole === 'co_host' ||
-    raw?.spaceRole === 'admin'
-      ? raw.spaceRole
-      : 'member',
-})
+const mapProfile = (raw: any, fallbackUsername?: string): UserProfile => {
+  console.log('[DEBUG] mapProfile raw data:', raw)
+  console.log('[DEBUG] spaceRole from API:', raw?.spaceRole)
+  return {
+    id: String(raw?.id ?? `local-${fallbackUsername ?? 'user'}`),
+    username: String(raw?.username ?? fallbackUsername ?? 'user'),
+    name: String(raw?.name ?? raw?.username ?? fallbackUsername ?? 'User'),
+    email: String(raw?.email ?? ''),
+    avatar:
+      typeof raw?.avatar === 'string' && raw.avatar.trim()
+        ? raw.avatar.trim()
+        : typeof raw?.picture === 'string' && raw.picture.trim()
+          ? raw.picture.trim()
+          : undefined,
+    spaceRole:
+      raw?.spaceRole === 'host' ||
+      raw?.spaceRole === 'co_host' ||
+      raw?.spaceRole === 'admin'
+        ? raw.spaceRole
+        : 'member',
+  }
+}
 
 export const extractApiErrorMessage = (error: ApiError) =>
   getApiErrorMessage(error)
