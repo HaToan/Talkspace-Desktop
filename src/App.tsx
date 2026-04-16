@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import {
@@ -14,14 +14,17 @@ import AuthScreen from './components/AuthScreen'
 import LiveVideoStage from './components/LiveVideoStage'
 import { logoutAccount } from './services/auth'
 import {
+  type InviteLookupUser,
   type RoomCategoryOption,
   assignRoomCoHost,
   assignRoomMember,
   closeRoom as closeRoomApi,
+  createRoomCategory as createRoomCategoryApi,
   createRoom as createRoomApi,
   deleteRoom as deleteRoomApi,
   demoteRoomUserToAudience,
   favoriteRoom as favoriteRoomApi,
+  findUserForInvite,
   getPrejoin,
   getRoomToken,
   getTalkspacesApiError,
@@ -33,9 +36,11 @@ import {
   listSpeakerRequests,
   listRooms,
   openRoom as openRoomApi,
+  requestAvatarUploadTarget,
   submitHostRequest,
   submitSpeakerRequest,
   unfavoriteRoom as unfavoriteRoomApi,
+  updateRoom as updateRoomApi,
   updateProfileSettings,
 } from './services/talkspaces'
 
@@ -50,6 +55,7 @@ type CreateRoomInput = {
   audienceEnabled: boolean
   tags: string[]
   scheduledAt?: string
+  repeatWeekly?: boolean
 }
 
 type JoinRoomOptions = {
@@ -93,7 +99,21 @@ const roleLabelForSpaceRole: Record<UserProfile['spaceRole'], string> = {
   admin: 'Admin',
 }
 
-type SidebarNavKey = 'rooms' | 'calendar' | 'participants' | 'programs' | 'settings'
+type RoomMembershipRole = 'host' | 'co_host' | 'member'
+
+const roomMembershipRoleLabel: Record<RoomMembershipRole, string> = {
+  host: 'Host',
+  co_host: 'Co-Host',
+  member: 'Member',
+}
+
+const resolveRoomMembershipRole = (room: TalkRoom, currentUserId: string): RoomMembershipRole => {
+  if (room.hostId === currentUserId || room.spaceRole === 'host') return 'host'
+  if (room.spaceRole === 'co_host') return 'co_host'
+  return 'member'
+}
+
+type SidebarNavKey = 'rooms' | 'calendar' | 'chat' | 'participants' | 'programs'
 
 const SidebarNavIcon = ({ id }: { id: SidebarNavKey }) => {
   if (id === 'rooms') {
@@ -121,6 +141,14 @@ const SidebarNavIcon = ({ id }: { id: SidebarNavKey }) => {
         <path d="M4.5 18c.6-2.5 2.6-4 4.5-4s3.9 1.5 4.5 4" />
         <circle cx="17" cy="10" r="2.3" />
         <path d="M15.2 17.2c.5-1.6 1.8-2.6 3.4-2.6" />
+      </svg>
+    )
+  }
+  if (id === 'chat') {
+    return (
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M4.5 6.2A2.7 2.7 0 0 1 7.2 3.5h9.6a2.7 2.7 0 0 1 2.7 2.7v7.2a2.7 2.7 0 0 1-2.7 2.7H11l-4.1 3.2v-3.2H7.2a2.7 2.7 0 0 1-2.7-2.7Z" />
+        <path d="M8 8.7h8M8 11.7h5.2" />
       </svg>
     )
   }
@@ -164,7 +192,6 @@ const isFuture = (iso?: string) => (iso ? dayjs(iso).isAfter(dayjs()) : false)
 const formatSchedule = (iso?: string) =>
   iso ? `${dayjs(iso).format('DD/MM/YYYY HH:mm')} (${dayjs(iso).fromNow()})` : 'No schedule'
 
-const dayKey = (iso: string) => dayjs(iso).format('YYYY-MM-DD')
 const AUTH_PROFILE_KEY = 'talkspaceDesktop.authProfile'
 
 const roomStatusWeight: Record<RoomStatus, number> = {
@@ -292,6 +319,7 @@ function App() {
   const [page, setPage] = useState<AppPage>({ key: 'rooms' })
   const [authProfile, setAuthProfile] = useState<UserProfile | null>(null)
   const profile = authProfile ?? defaultProfile
+  const isHostSpaceRole = profile?.spaceRole === 'host'
 
   const [categories, setCategories] = useState<RoomCategoryOption[]>([])
   const [rooms, setRooms] = useState<TalkRoom[]>([])
@@ -314,11 +342,14 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState<'all' | RoomStatus>('all')
   const [createOpen, setCreateOpen] = useState(false)
+  const [editingRoom, setEditingRoom] = useState<TalkRoom | null>(null)
 
   const [participantsRoomId, setParticipantsRoomId] = useState<string>('')
+  const [chatRoomId, setChatRoomId] = useState<string>('')
   const [participantQuery, setParticipantQuery] = useState('')
   const [inviteName, setInviteName] = useState('')
-  const [inviteRole, setInviteRole] = useState<ParticipantRole>('member')
+  const [inviteLookupUser, setInviteLookupUser] = useState<InviteLookupUser | null>(null)
+  const [inviteLookupLoading, setInviteLookupLoading] = useState(false)
   const [participantsNotice, setParticipantsNotice] = useState('')
 
   const [calendarMonth, setCalendarMonth] = useState(dayjs())
@@ -359,7 +390,7 @@ function App() {
     const loadVersions = async () => {
       if (!window.electronAPI?.getVersions) return
       const versions = await window.electronAPI.getVersions()
-      setRuntimeVersion(`Electron ${versions.electron} Â· Node ${versions.node}`)
+      setRuntimeVersion(`Electron ${versions.electron} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Node ${versions.node}`)
     }
     void loadVersions()
   }, [])
@@ -506,30 +537,58 @@ function App() {
   }, [authProfile, page.key])
 
   useEffect(() => {
-    if (!rooms.find((room) => room.id === participantsRoomId)) {
-      setParticipantsRoomId(rooms[0]?.id ?? '')
-    }
-  }, [participantsRoomId, rooms])
-
-  useEffect(() => {
     if (page.key === 'detail') {
+      setPage({ key: 'rooms' })
+      return
+    }
+    if (page.key === 'participants' && !isHostSpaceRole) {
+      setPage({ key: 'rooms' })
+      return
+    }
+    if (page.key === 'programs') {
       setPage({ key: 'rooms' })
       return
     }
     if (page.key === 'conference' && !rooms.some((room) => room.id === page.roomId)) {
       setPage({ key: 'rooms' })
     }
-  }, [page, rooms])
+  }, [isHostSpaceRole, page, rooms])
 
   const selectedRoom = useMemo(() => {
     if (page.key !== 'detail' && page.key !== 'conference') return null
     return rooms.find((room) => room.id === page.roomId) ?? null
   }, [page, rooms])
 
-  const participantsPageRoom = useMemo(
-    () => rooms.find((room) => room.id === participantsRoomId) ?? null,
-    [participantsRoomId, rooms],
+  const participantsManageRooms = useMemo(
+    () =>
+      rooms.filter(
+        (room) => room.hostId === profile.id || room.spaceRole === 'host' || room.spaceRole === 'co_host',
+      ),
+    [profile.id, rooms],
   )
+
+  const participantsPageRoom = useMemo(
+    () => participantsManageRooms.find((room) => room.id === participantsRoomId) ?? null,
+    [participantsManageRooms, participantsRoomId],
+  )
+  const chatPageRoom = useMemo(() => rooms.find((room) => room.id === chatRoomId) ?? null, [chatRoomId, rooms])
+
+  useEffect(() => {
+    if (!participantsManageRooms.find((room) => room.id === participantsRoomId)) {
+      setParticipantsRoomId(participantsManageRooms[0]?.id ?? '')
+    }
+  }, [participantsManageRooms, participantsRoomId])
+
+  useEffect(() => {
+    if (!rooms.find((room) => room.id === chatRoomId)) {
+      setChatRoomId(rooms[0]?.id ?? '')
+    }
+  }, [chatRoomId, rooms])
+
+  useEffect(() => {
+    setInviteLookupUser(null)
+    setInviteLookupLoading(false)
+  }, [participantsRoomId])
 
   useEffect(() => {
     if (!authProfile) return
@@ -611,6 +670,11 @@ function App() {
     })
   }, [participantQuery, participantsByRoom, participantsPageRoom])
 
+  const participantsRoomAll = useMemo(
+    () => (participantsPageRoom ? participantsByRoom[participantsPageRoom.id] ?? [] : []),
+    [participantsByRoom, participantsPageRoom],
+  )
+
   const calendarDays = useMemo(() => {
     const start = calendarMonth.startOf('month').startOf('week')
     const end = calendarMonth.endOf('month').endOf('week')
@@ -634,7 +698,7 @@ function App() {
       if (!scheduled.isValid()) continue
 
       const pushDate = (date: dayjs.Dayjs) => {
-        const key = dayKey(date.toISOString())
+        const key = date.format('YYYY-MM-DD')
         const list = map.get(key) ?? []
         list.push(room)
         list.sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? ''))
@@ -713,7 +777,7 @@ function App() {
         audienceEnabled: payload.isPrivate ? payload.audienceEnabled : false,
         tagSlugs: payload.tags,
         scheduledAt,
-        repeatWeekly: Boolean(scheduledAt),
+        repeatWeekly: Boolean(scheduledAt && payload.repeatWeekly),
       })
 
       setRooms((prev) => mergeRoomLists([createdRoom], prev))
@@ -725,6 +789,57 @@ function App() {
       return getTalkspacesApiError(error)
     }
   }
+
+  const updateRoom = async (roomId: string, payload: CreateRoomInput) => {
+    try {
+      setRoomsError('')
+
+      const scheduledAt = payload.scheduledAt ? dayjs(payload.scheduledAt).toISOString() : undefined
+      const updatedRoom = await updateRoomApi(roomId, {
+        title: payload.title,
+        description: payload.description,
+        categoryId: payload.categoryId || undefined,
+        maxParticipants: payload.maxParticipants,
+        isPrivate: payload.isPrivate,
+        audienceEnabled: payload.isPrivate ? payload.audienceEnabled : false,
+        tagSlugs: payload.tags,
+        scheduledAt,
+        repeatWeekly: Boolean(scheduledAt && payload.repeatWeekly),
+      })
+
+      setRooms((prev) => prev.map((room) => (room.id === roomId ? updatedRoom : room)))
+      setMyRooms((prev) => prev.map((room) => (room.id === roomId ? updatedRoom : room)))
+      setEditingRoom(null)
+      setGlobalNotice('Room updated successfully.')
+      return null
+    } catch (error: any) {
+      return getTalkspacesApiError(error)
+    }
+  }
+
+  const openEditRoomModal = (roomId: string) => {
+    const room = rooms.find((item) => item.id === roomId) ?? myRooms.find((item) => item.id === roomId)
+    if (!room) {
+      setGlobalNotice('Room not found.')
+      return
+    }
+    setEditingRoom(room)
+  }
+
+  const editingRoomInitialValues = useMemo<Partial<CreateRoomInput> | undefined>(() => {
+    if (!editingRoom) return undefined
+    return {
+      title: editingRoom.title,
+      description: editingRoom.description || '',
+      categoryId: editingRoom.categoryId || categoryOptions[0]?.id || '',
+      maxParticipants: editingRoom.maxParticipants ?? 0,
+      isPrivate: Boolean(editingRoom.isPrivate),
+      audienceEnabled: Boolean(editingRoom.audienceEnabled),
+      tags: editingRoom.tags || [],
+      scheduledAt: editingRoom.scheduledAt ? dayjs(editingRoom.scheduledAt).format('YYYY-MM-DDTHH:mm') : '',
+      repeatWeekly: Boolean(editingRoom.repeatWeekly),
+    }
+  }, [editingRoom, categoryOptions])
 
   const toggleFavorite = async (roomId: string) => {
     try {
@@ -1085,7 +1200,7 @@ function App() {
 
     const normalized = slugify(name.replace(/^@/, ''))
     if (!normalized) {
-      setParticipantsNotice('Username is required.')
+      setParticipantsNotice('ID is required.')
       return false
     }
 
@@ -1106,6 +1221,27 @@ function App() {
     } catch (error: any) {
       setParticipantsNotice(getTalkspacesApiError(error))
       return false
+    }
+  }
+
+  const lookupInviteUser = async (nameOrId: string) => {
+    const normalized = nameOrId.trim()
+    if (!normalized) {
+      setParticipantsNotice('ID is required.')
+      setInviteLookupUser(null)
+      return
+    }
+
+    setInviteLookupLoading(true)
+    try {
+      const user = await findUserForInvite(normalized)
+      setInviteLookupUser(user)
+      setParticipantsNotice('')
+    } catch (error: any) {
+      setInviteLookupUser(null)
+      setParticipantsNotice(getTalkspacesApiError(error))
+    } finally {
+      setInviteLookupLoading(false)
     }
   }
 
@@ -1148,6 +1284,7 @@ function App() {
       const response = await updateProfileSettings(profile.username, {
         name: next.name,
         username: next.username,
+        avatar: next.avatar,
       })
 
       const nextProfile = response.profile ?? next
@@ -1274,6 +1411,7 @@ function App() {
       return (
         <CalendarView
           rooms={rooms}
+          currentUserId={profile.id}
           month={calendarMonth}
           selectedDay={calendarSelectedDay}
           days={calendarDays}
@@ -1284,30 +1422,90 @@ function App() {
           onOpenRoom={(roomId) => {
             void openRoomWindow(roomId)
           }}
+          onCreateRoom={() => setCreateOpen(true)}
+          onEditRoom={openEditRoomModal}
+          onReopenRoom={async (roomId) => {
+            try {
+              const updated = await openRoomApi(roomId)
+              setRooms((prev) => prev.map((room) => (room.id === roomId ? updated : room)))
+              setMyRooms((prev) => prev.map((room) => (room.id === roomId ? updated : room)))
+              setGlobalNotice('')
+              return null
+            } catch (error: any) {
+              return getTalkspacesApiError(error)
+            }
+          }}
+          onDeleteRoom={async (roomId) => {
+            try {
+              await deleteRoomApi(roomId)
+              setRooms((prev) => prev.filter((room) => room.id !== roomId))
+              setMyRooms((prev) => prev.filter((room) => room.id !== roomId))
+              setParticipantsByRoom((prev) => {
+                const next = { ...prev }
+                delete next[roomId]
+                return next
+              })
+              setConferenceSessionByRoom((prev) => {
+                const next = { ...prev }
+                delete next[roomId]
+                return next
+              })
+              setGlobalNotice('')
+              return null
+            } catch (error: any) {
+              return getTalkspacesApiError(error)
+            }
+          }}
         />
       )
     }
 
-    if (page.key === 'participants') {
+    if (page.key === 'chat') {
+      return (
+        <RoomChatView
+          rooms={rooms}
+          room={chatPageRoom}
+          roomId={chatRoomId}
+          currentUser={profile}
+          chat={chatPageRoom ? chatByRoom[chatPageRoom.id] ?? [] : []}
+          onRoomChange={setChatRoomId}
+          onSendChat={(text) => {
+            if (!chatPageRoom) return
+            sendChat(chatPageRoom.id, text)
+          }}
+        />
+      )
+    }
+
+    if (page.key === 'participants' && isHostSpaceRole) {
       return (
         <ParticipantsView
-          rooms={rooms}
+          rooms={participantsManageRooms}
+          room={participantsPageRoom}
+          currentUserId={profile.id}
           roomId={participantsRoomId}
           participants={participantsPageList}
+          allParticipants={participantsRoomAll}
           loading={participantsPageRoom ? Boolean(participantsLoading[participantsPageRoom.id]) : false}
           query={participantQuery}
           inviteName={inviteName}
-          inviteRole={inviteRole}
+          inviteLookupUser={inviteLookupUser}
+          inviteLookupLoading={inviteLookupLoading}
           notice={participantsNotice}
           onRoomChange={(value) => setParticipantsRoomId(value)}
           onQueryChange={setParticipantQuery}
-          onInviteNameChange={setInviteName}
-          onInviteRoleChange={setInviteRole}
-          onInvite={async () => {
+          onInviteNameChange={(value) => {
+            setInviteName(value)
+            setInviteLookupUser(null)
+          }}
+          onFindInviteUser={() => void lookupInviteUser(inviteName)}
+          onInviteAsRole={async (role) => {
             if (!participantsPageRoom) return
-            const success = await addParticipant(participantsPageRoom.id, inviteName, inviteRole)
+            const selectedUsername = inviteLookupUser?.username || inviteName
+            const success = await addParticipant(participantsPageRoom.id, selectedUsername, role)
             if (success) {
               setInviteName('')
+              setInviteLookupUser(null)
             }
           }}
           onPromote={(participant) => {
@@ -1368,6 +1566,7 @@ function App() {
         onOpenRoom={(roomId) => {
           void openRoomWindow(roomId)
         }}
+        onEditRoom={openEditRoomModal}
         onReopenRoom={async (roomId) => {
           try {
             const updated = await openRoomApi(roomId)
@@ -1417,7 +1616,7 @@ function App() {
   }
 
   if (!authProfile) {
-    return <AuthScreen runtimeVersion={runtimeVersion} onAuthenticated={handleAuthenticated} />
+    return <AuthScreen onAuthenticated={handleAuthenticated} />
   }
 
   if (isConferenceLaunchWindow) {
@@ -1441,6 +1640,8 @@ function App() {
   const pageLabel =
     page.key === 'conference' ? 'Conference' : page.key.charAt(0).toUpperCase() + page.key.slice(1)
   const isImmersivePage = page.key === 'conference'
+  const isChatPage = page.key === 'chat'
+  const isCalendarPage = page.key === 'calendar'
 
   return (
     <div className="main-window-root">
@@ -1458,9 +1659,8 @@ function App() {
           {[
             { key: 'rooms', label: 'Rooms' },
             { key: 'calendar', label: 'Calendar' },
-            { key: 'participants', label: 'Participants' },
-            { key: 'programs', label: 'Programs' },
-            { key: 'settings', label: 'Settings' },
+            { key: 'chat', label: 'Chat' },
+            ...(isHostSpaceRole ? [{ key: 'participants', label: 'Participants' }] : []),
           ].map((item) => (
             <button
               key={item.key}
@@ -1478,13 +1678,21 @@ function App() {
         </nav>
 
         <div className="sidebar-profile">
-          <div className="avatar">
-            {profile.avatar ? (
-              <img src={profile.avatar} alt={profile.name} className="avatar-image" />
-            ) : (
-              profile.name.slice(0, 1).toUpperCase()
-            )}
-          </div>
+          <button
+            type="button"
+            className="sidebar-avatar-trigger"
+            onClick={() => setPage({ key: 'settings' })}
+            title="Open settings"
+            aria-label="Open settings"
+          >
+            <div className="avatar">
+              {profile.avatar ? (
+                <img src={profile.avatar} alt={profile.name} className="avatar-image" />
+              ) : (
+                profile.name.slice(0, 1).toUpperCase()
+              )}
+            </div>
+          </button>
           <div className="profile-meta">
             <div className="profile-name">{profile.name}</div>
             <div className="profile-role">{roleLabelForSpaceRole[profile.spaceRole]}</div>
@@ -1496,15 +1704,17 @@ function App() {
       </aside>
 
       <main className="main-content">
-        <header className="main-header">
+        {/* <header className="main-header">
           <div>
             <h1>{pageLabel}</h1>
             <p>Desktop meetings synced with VXSpace web services.</p>
           </div>
           {roomsError && <div className="error">{roomsError}</div>}
           {globalNotice && <div className="notice">{globalNotice}</div>}
-        </header>
-        <section className={`main-section ${isImmersivePage ? 'main-section-immersive' : ''}`}>
+        </header> */}
+        <section
+          className={`main-section ${isImmersivePage ? 'main-section-immersive' : ''} ${isChatPage ? 'main-section-chat' : ''} ${isCalendarPage ? 'main-section-calendar' : ''}`}
+        >
           {renderMain()}
         </section>
       </main>
@@ -1514,6 +1724,17 @@ function App() {
           categories={categoryOptions}
           onCancel={() => setCreateOpen(false)}
           onCreate={createRoom}
+        />
+      )}
+
+      {editingRoom && (
+        <CreateRoomModal
+          categories={categoryOptions}
+          onCancel={() => setEditingRoom(null)}
+          onCreate={(payload) => updateRoom(editingRoom.id, payload)}
+          titleText="Edit room"
+          submitLabel="Save changes"
+          initialValues={editingRoomInitialValues}
         />
       )}
 
@@ -1617,6 +1838,7 @@ function RoomsView({
   onToggleFavorite,
   onRetry,
   onOpenRoom,
+  onEditRoom,
   onReopenRoom,
   onCloseRoom,
   onDeleteRoom,
@@ -1640,6 +1862,7 @@ function RoomsView({
   onToggleFavorite: (roomId: string) => void
   onRetry: () => void
   onOpenRoom: (roomId: string) => void
+  onEditRoom: (roomId: string) => void
   onReopenRoom: (roomId: string) => Promise<string | null>
   onCloseRoom: (roomId: string) => Promise<string | null>
   onDeleteRoom: (roomId: string) => Promise<string | null>
@@ -1722,7 +1945,8 @@ function RoomsView({
 
   const renderDrawerRoomItem = (room: TalkRoom, mode: 'owner' | 'member' | 'favorite') => {
     const isRoomActionLoading = drawerActionLoadingId?.startsWith(`${room.id}:`) ?? false
-    const canManageRoom = mode === 'owner'
+    const canManageRoom = mode === 'owner' || room.spaceRole === 'co_host' || room.spaceRole === 'host'
+    const roomRole = resolveRoomMembershipRole(room, currentUserId)
 
     return (
       <article key={`${mode}:${room.id}`} className="rooms-myrooms-item" onClick={() => onOpenRoom(room.id)}>
@@ -1738,11 +1962,14 @@ function RoomsView({
                 </svg>
               )}
             </span>
-          <span className="rooms-myrooms-item-title-text">
+            <span className="rooms-myrooms-item-title-text">
               <strong>{room.title}</strong>
               <small>{getRoomCategoryLabel(room)}</small>
             </span>
           </div>
+          <span className={`rooms-myrooms-role-badge rooms-myrooms-role-${roomRole}`}>
+            {roomMembershipRoleLabel[roomRole]}
+          </span>
         </div>
         <div className="rooms-myrooms-item-meta">
           <span className="rooms-myrooms-item-meta-entry">
@@ -1766,29 +1993,62 @@ function RoomsView({
         </div>
         {canManageRoom && (
           <div className="rooms-myrooms-actions-row">
-            <button
-              className="rooms-myrooms-action-wide rooms-myrooms-action-edit"
-              onClick={(event) => {
-                event.stopPropagation()
-                onOpenRoom(room.id)
-              }}
-              type="button"
-            >
-              Open window
-            </button>
-            {room.status !== 'open' ? (
+            <div className="rooms-myrooms-actions-main">
               <button
-                className="rooms-myrooms-action-wide rooms-myrooms-action-reopen"
-                disabled={isRoomActionLoading}
+                className="rooms-myrooms-action-wide rooms-myrooms-action-edit"
                 onClick={(event) => {
                   event.stopPropagation()
-                  void runDrawerAction(`${room.id}:reopen`, () => onReopenRoom(room.id))
+                  onEditRoom(room.id)
                 }}
                 type="button"
               >
-                Reopen room
+                Edit room
               </button>
-            ) : null}
+              {room.status === 'open' ? (
+                <button
+                  className="rooms-myrooms-action-wide rooms-myrooms-action-close"
+                  disabled={isRoomActionLoading}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void runDrawerAction(`${room.id}:close`, () => onCloseRoom(room.id))
+                  }}
+                  type="button"
+                >
+                  Close room
+                </button>
+              ) : (
+                <button
+                  className="rooms-myrooms-action-wide rooms-myrooms-action-reopen"
+                  disabled={isRoomActionLoading}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void runDrawerAction(`${room.id}:reopen`, () => onReopenRoom(room.id))
+                  }}
+                  type="button"
+                >
+                  Reopen room
+                </button>
+              )}
+            </div>
+            <button
+              className="rooms-myrooms-action-btn rooms-myrooms-action-delete"
+              disabled={isRoomActionLoading}
+              onClick={(event) => {
+                event.stopPropagation()
+                if (!window.confirm(`Delete room "${room.title}"?`)) return
+                void runDrawerAction(`${room.id}:delete`, () => onDeleteRoom(room.id))
+              }}
+              type="button"
+              title="Delete room"
+              aria-label={`Delete room ${room.title}`}
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.9">
+                <path d="M4 7.5h16" />
+                <path d="M9.5 3.5h5" />
+                <rect x="6.5" y="7.5" width="11" height="13" rx="2" />
+                <path d="M10 11v6M14 11v6" />
+              </svg>
+            </button>
           </div>
         )}
       </article>
@@ -1799,8 +2059,12 @@ function RoomsView({
     <div className="rooms-view">
       <div className="hero-card rooms-hero-card">
         <div>
-          <p className="hero-eyebrow">Live Spaces</p>
-          <h2>TalkSpace</h2>
+          <p className="hero-eyebrow">
+            <svg viewBox="64 64 896 896" focusable="false" data-icon="video-camera" width="1em" height="1em" fill="currentColor" aria-hidden="true"><path d="M912 302.3L784 376V224c0-35.3-28.7-64-64-64H128c-35.3 0-64 28.7-64 64v576c0 35.3 28.7 64 64 64h592c35.3 0 64-28.7 64-64V648l128 73.7c21.3 12.3 48-3.1 48-27.6V330c0-24.6-26.7-40-48-27.7zM712 792H136V232h576v560zm176-167l-104-59.8V458.9L888 399v226zM208 360h112c4.4 0 8-3.6 8-8v-48c0-4.4-3.6-8-8-8H208c-4.4 0-8 3.6-8 8v48c0 4.4 3.6 8 8 8z"></path></svg>
+            
+            <span className='livespace-text'>Live Space</span>
+          </p>
+          <h2><strong>TalkSpace</strong></h2>
           <p className="hero-subtitle">
             {openRooms.length} phong dang mo
           </p>
@@ -1864,16 +2128,11 @@ function RoomsView({
       {error && (
         <div className="filters">
           <div className="error">{error}</div>
-          <button className="ghost-button" onClick={onRetry}>
+          <button className="ghost-button rooms-retry-button" onClick={onRetry}>
             Retry
           </button>
         </div>
       )}
-
-      <div className="open-rooms-head">
-        <h3>Rooms</h3>
-        <span>Auto refresh 5s</span>
-      </div>
 
       <div className="room-grid">
         {loading && (
@@ -1917,10 +2176,30 @@ function RoomsView({
                     )}
                   </div>
                   <div className="room-stage-center">
-                    <svg viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="currentColor" strokeWidth="1.8">
-                      <path d="M12 3.5v9.2M8.6 7.8a3.4 3.4 0 1 1 6.8 0v4.9a3.4 3.4 0 1 1-6.8 0z" />
-                      <path d="M6.5 11.8v1.3a5.5 5.5 0 1 0 11 0v-1.3M12 18.6v2.8M9.7 21.4h4.6" />
-                    </svg>
+                    <div className="room-audio-visual" aria-hidden="true">
+                      <span className="room-audio-pulse room-audio-pulse-1" />
+                      <span className="room-audio-pulse room-audio-pulse-2" />
+                      <span className="room-audio-pulse room-audio-pulse-3" />
+
+                      <div className="room-audio-bars room-audio-bars-left">
+                        <span className="room-audio-bar" />
+                        <span className="room-audio-bar" />
+                        <span className="room-audio-bar" />
+                        <span className="room-audio-bar" />
+                      </div>
+
+                      <svg className="room-audio-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <path d="M12 3.5v9.2M8.6 7.8a3.4 3.4 0 1 1 6.8 0v4.9a3.4 3.4 0 1 1-6.8 0z" />
+                        <path d="M6.5 11.8v1.3a5.5 5.5 0 1 0 11 0v-1.3M12 18.6v2.8M9.7 21.4h4.6" />
+                      </svg>
+
+                      <div className="room-audio-bars room-audio-bars-right">
+                        <span className="room-audio-bar" />
+                        <span className="room-audio-bar" />
+                        <span className="room-audio-bar" />
+                        <span className="room-audio-bar" />
+                      </div>
+                    </div>
                   </div>
                   <span className="room-stage-participants">
                     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.9">
@@ -1934,7 +2213,13 @@ function RoomsView({
                   <span className="room-category-pill">{getRoomCategoryLabel(room)}</span>
                   <h3>{room.title}</h3>
                   <div className="room-host-row">
-                    <span className="room-host-avatar">{(room.hostName || '?').slice(0, 1).toUpperCase()}</span>
+                    <span className="room-host-avatar">
+                      {room.hostAvatar ? (
+                        <img src={room.hostAvatar} alt={room.hostName} className="room-host-avatar-image" />
+                      ) : (
+                        (room.hostName || '?').slice(0, 1).toUpperCase()
+                      )}
+                    </span>
                     <span>{room.hostName}</span>
                   </div>
                 </div>
@@ -2471,6 +2756,174 @@ function RoomDetailView({
   )
 }
 
+function RoomChatView({
+  rooms,
+  room,
+  roomId,
+  currentUser,
+  chat,
+  onRoomChange,
+  onSendChat,
+}: {
+  rooms: TalkRoom[]
+  room: TalkRoom | null
+  roomId: string
+  currentUser: UserProfile
+  chat: ChatMessage[]
+  onRoomChange: (roomId: string) => void
+  onSendChat: (text: string) => void
+}) {
+  const [roomSearch, setRoomSearch] = useState('')
+  const [message, setMessage] = useState('')
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+
+  const normalizedRoomSearch = roomSearch.trim().toLowerCase()
+  const filteredRooms = useMemo(() => {
+    if (!normalizedRoomSearch) return rooms
+    return rooms.filter((item) => {
+      const searchable = `${item.title} ${item.hostName ?? ''} ${item.categoryName ?? ''} ${item.roomName ?? ''}`.toLowerCase()
+      return searchable.includes(normalizedRoomSearch)
+    })
+  }, [normalizedRoomSearch, rooms])
+
+  useEffect(() => {
+    setMessage('')
+  }, [room?.id])
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [chat.length, room?.id])
+
+  const submitMessage = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const trimmed = message.trim()
+    if (!room || !trimmed) return
+    onSendChat(trimmed)
+    setMessage('')
+  }
+
+  return (
+    <div className="chat-room-page">
+      <aside className="chat-room-sidebar">
+        <div className="chat-room-sidebar-head">
+          <strong>Chat</strong>
+          <span>{rooms.length}</span>
+        </div>
+
+        <div className="chat-room-sidebar-search">
+          <input
+            className="input"
+            value={roomSearch}
+            onChange={(event) => setRoomSearch(event.target.value)}
+            placeholder="Search room"
+          />
+        </div>
+
+        <div className="chat-room-sidebar-caption">Rooms and channels</div>
+
+        <div className="chat-room-room-list">
+          {rooms.length === 0 && (
+            <div className="chat-room-room-empty">No rooms available</div>
+          )}
+          {rooms.length > 0 && filteredRooms.length === 0 && (
+            <div className="chat-room-room-empty">No matching rooms</div>
+          )}
+
+          {filteredRooms.map((item) => {
+            const isActive = item.id === roomId
+            const roomTitle = item.title.trim() || '...'
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={`chat-room-room-item ${isActive ? 'active' : ''}`}
+                onClick={() => onRoomChange(item.id)}
+              >
+                <div className="chat-room-room-item-title">
+                  <strong>{roomTitle}</strong>
+                  <span>{item.isPrivate ? 'Private' : 'Public'}</span>
+                </div>
+                <div className="chat-room-room-item-meta">
+                  <span>Host: {item.hostName}</span>
+                  <span>
+                    {item.participantCount}
+                    {item.maxParticipants > 0 ? ` / ${item.maxParticipants}` : ''} participants
+                  </span>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </aside>
+
+      <section className="chat-room-main">
+        <div className="chat-room-main-header">
+          <div className="chat-room-main-title">
+            <strong>{room ? room.title : 'Room chat'}</strong>
+            <span>{room ? `Host: ${room.hostName}` : 'Select a room to start chat'}</span>
+          </div>
+          {room && (
+            <div className="chat-room-meta">
+              <span className={statusTone[room.status].className}>{statusTone[room.status].label}</span>
+              <span className="chat-room-meta-pill">{room.isPrivate ? 'Private' : 'Public'}</span>
+              <span className="chat-room-meta-pill">
+                {chat.length} messages
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="chat-room-messages">
+          {!room && (
+            <div className="empty-state">
+              <h3>No room selected</h3>
+              <p>Select a room from above to view and send messages.</p>
+            </div>
+          )}
+
+          {room && chat.length === 0 && (
+            <div className="empty-state">
+              <h3>No messages yet</h3>
+              <p>Start the conversation in this room.</p>
+            </div>
+          )}
+
+          {room &&
+            chat.map((entry) => {
+              const isMine =
+                entry.sender === currentUser.name ||
+                entry.sender === currentUser.username ||
+                entry.sender === `@${currentUser.username}`
+              return (
+                <article key={entry.id} className={`chat-room-message ${isMine ? 'chat-room-message-self' : ''}`}>
+                  <div className="chat-room-message-meta">
+                    <span>{entry.sender}</span>
+                    <time>{dayjs(entry.time).format('HH:mm')}</time>
+                  </div>
+                  <p>{entry.text}</p>
+                </article>
+              )
+            })}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <form className="chat-room-input-bar" onSubmit={submitMessage}>
+          <input
+            className="input"
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder={room ? 'Type a message...' : 'Select a room first'}
+            disabled={!room}
+          />
+          <button className="primary-button" type="submit" disabled={!room || !message.trim()}>
+            Send
+          </button>
+        </form>
+      </section>
+    </div>
+  )
+}
+
 function ConferenceView({
   room,
   chat,
@@ -2672,6 +3125,7 @@ function ConferenceView({
 
 function CalendarView({
   rooms,
+  currentUserId,
   month,
   selectedDay,
   days,
@@ -2680,8 +3134,13 @@ function CalendarView({
   onMonthChange,
   onSelectDay,
   onOpenRoom,
+  onCreateRoom,
+  onEditRoom,
+  onReopenRoom,
+  onDeleteRoom,
 }: {
   rooms: TalkRoom[]
+  currentUserId: string
   month: dayjs.Dayjs
   selectedDay: string
   days: dayjs.Dayjs[]
@@ -2690,156 +3149,574 @@ function CalendarView({
   onMonthChange: (next: dayjs.Dayjs) => void
   onSelectDay: (dayKey: string) => void
   onOpenRoom: (roomId: string) => void
+  onCreateRoom: () => void
+  onEditRoom: (roomId: string) => void
+  onReopenRoom: (roomId: string) => Promise<string | null>
+  onDeleteRoom: (roomId: string) => Promise<string | null>
 }) {
   const scheduledCount = rooms.filter((room) => !!room.scheduledAt).length
+  const [dayDrawerOpen, setDayDrawerOpen] = useState(false)
+  const [drawerActionLoadingId, setDrawerActionLoadingId] = useState<string | null>(null)
+  const [drawerActionError, setDrawerActionError] = useState('')
+  const selectedDayLabel = dayjs(selectedDay).format('DD/MM/YYYY')
+
+  const runDrawerAction = async (actionId: string, action: () => Promise<string | null>) => {
+    if (drawerActionLoadingId) return
+    setDrawerActionLoadingId(actionId)
+    setDrawerActionError('')
+    const result = await action()
+    if (result) {
+      setDrawerActionError(result)
+    }
+    setDrawerActionLoadingId(null)
+  }
+
+  const handleSelectDay = (dayKey: string) => {
+    onSelectDay(dayKey)
+    setDrawerActionError('')
+    setDayDrawerOpen(true)
+  }
+
+  const renderScheduledRoomItem = (room: TalkRoom, source: 'panel' | 'drawer' = 'panel') => {
+    const scheduledAt = room.scheduledAt ? dayjs(room.scheduledAt) : null
+    const hasSchedule = Boolean(scheduledAt && scheduledAt.isValid())
+    const scheduleTime = hasSchedule ? scheduledAt!.format('HH:mm') : '--:--'
+    const scheduleDate = hasSchedule ? scheduledAt!.format('ddd, DD/MM/YYYY') : 'No schedule date'
+    const scheduleRelative = hasSchedule ? scheduledAt!.fromNow() : 'No schedule'
+    const statusLabel = room.status === 'open' ? 'Open' : room.status === 'scheduled' ? 'Scheduled' : 'Closed'
+    const roomRole = resolveRoomMembershipRole(room, currentUserId)
+    const canManageRoom = room.hostId === currentUserId || room.spaceRole === 'co_host' || room.spaceRole === 'host'
+    const isRoomActionLoading = drawerActionLoadingId?.startsWith(`${room.id}:`) ?? false
+
+    if (source === 'drawer') {
+      return (
+        <article key={`${source}:${room.id}`} className="rooms-myrooms-item calendar-day-room-item" onClick={() => onOpenRoom(room.id)}>
+          <div className="rooms-myrooms-item-top">
+            <div className="rooms-myrooms-item-title-wrap">
+              <span className="rooms-myrooms-item-thumb">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M4.5 7.5h15M8 4v3.5M16 4v3.5M5 7.5v11a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 18.5v-11" />
+                </svg>
+              </span>
+              <span className="rooms-myrooms-item-title-text">
+                <strong>{room.title}</strong>
+                <small>{room.categoryName?.trim() || 'General'}</small>
+              </span>
+            </div>
+            <div className="calendar-day-room-badges">
+              <span className={`rooms-myrooms-role-badge rooms-myrooms-role-${roomRole}`}>
+                {roomMembershipRoleLabel[roomRole]}
+              </span>
+              <span className={`event-status-badge event-status-${room.status}`}>{statusLabel}</span>
+            </div>
+          </div>
+
+          <div className="rooms-myrooms-item-meta">
+            <span className="rooms-myrooms-item-meta-entry">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.9">
+                <circle cx="12" cy="12" r="8.2" />
+                <path d="M12 7.5v5l3.3 2" />
+              </svg>
+              <span>{scheduleTime} ({scheduleRelative})</span>
+            </span>
+            <span className="rooms-myrooms-item-meta-entry">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.9">
+                <path d="M16 19v-1.2a3.3 3.3 0 0 0-3.3-3.3H7.3A3.3 3.3 0 0 0 4 17.8V19" />
+                <circle cx="10" cy="8" r="3.1" />
+              </svg>
+              <span>
+                {room.participantCount}
+                {room.maxParticipants > 0 ? `/${room.maxParticipants}` : '/-'} people
+              </span>
+            </span>
+            <span className="rooms-myrooms-item-meta-entry">{scheduleDate}</span>
+          </div>
+
+          {canManageRoom && (
+            <div className="rooms-myrooms-actions-row">
+              <div className="rooms-myrooms-actions-main rooms-myrooms-actions-main-3">
+                <button
+                  className="rooms-myrooms-action-wide rooms-myrooms-action-edit"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onEditRoom(room.id)
+                  }}
+                  type="button"
+                >
+                  Edit room
+                </button>
+                <button
+                  className="rooms-myrooms-action-wide rooms-myrooms-action-reopen"
+                  disabled={isRoomActionLoading || room.status === 'open'}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    if (room.status === 'open') return
+                    void runDrawerAction(`${room.id}:reopen`, () => onReopenRoom(room.id))
+                  }}
+                  type="button"
+                >
+                  Open room
+                </button>
+                <button
+                  className="rooms-myrooms-action-wide rooms-myrooms-action-delete"
+                  disabled={isRoomActionLoading}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    if (!window.confirm(`Delete room "${room.title}"?`)) return
+                    void runDrawerAction(`${room.id}:delete`, () => onDeleteRoom(room.id))
+                  }}
+                  type="button"
+                >
+                  Delete room
+                </button>
+              </div>
+            </div>
+          )}
+        </article>
+      )
+    }
+
+    return (
+      <button
+        key={`${source}:${room.id}`}
+        className="event-item"
+        onClick={() => onOpenRoom(room.id)}
+      >
+        <div className="event-item-head">
+          <div className="event-time-badge">
+            <strong>{scheduleTime}</strong>
+            <small>{scheduleDate}</small>
+          </div>
+          <span className={`event-status-badge event-status-${room.status}`}>{statusLabel}</span>
+        </div>
+        <strong className="event-title">{room.title}</strong>
+        <div className="event-schedule-line">Starts {scheduleRelative}</div>
+        <div className="event-meta-row">
+          <span className="event-meta-pill">{room.categoryName?.trim() || 'General'}</span>
+          <span className="event-meta-text">Host: {room.hostName}</span>
+          <span className="event-meta-text">{room.isPrivate ? 'Private' : 'Public'}</span>
+        </div>
+        {room.description?.trim() ? <p className="event-description">{room.description.trim()}</p> : null}
+      </button>
+    )
+  }
 
   return (
-    <div className="calendar-view">
-      <div className="calendar-header">
-        <div>
-          <h2>{month.format('MMMM YYYY')}</h2>
-          <p>{scheduledCount} scheduled rooms</p>
-        </div>
-        <div className="calendar-nav">
-          <button className="ghost-button" onClick={() => onMonthChange(month.subtract(1, 'month'))}>
-            Prev
-          </button>
-          <button className="ghost-button" onClick={() => onMonthChange(dayjs())}>
-            Today
-          </button>
-          <button className="ghost-button" onClick={() => onMonthChange(month.add(1, 'month'))}>
-            Next
-          </button>
-        </div>
-      </div>
-
-      <div className="calendar-grid">
-        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((weekday) => (
-          <div key={weekday} className="calendar-weekday">
-            {weekday}
+    <>
+      <div className="calendar-view">
+        <div className="calendar-header">
+          <div>
+            <h2>{month.format('MMMM YYYY')}</h2>
+            <p>{scheduledCount} scheduled rooms</p>
           </div>
-        ))}
-        {days.map((date) => {
-          const key = date.format('YYYY-MM-DD')
-          const events = scheduledByDay.get(key) ?? []
-          const isCurrentMonth = date.month() === month.month()
-          const isSelected = selectedDay === key
-
-          return (
-            <button
-              key={key}
-              className={`calendar-day ${isCurrentMonth ? '' : 'muted'} ${isSelected ? 'selected' : ''}`}
-              onClick={() => onSelectDay(key)}
-            >
-              <div className="calendar-day-top">
-                <span>{date.date()}</span>
-                <span>{events.length > 0 ? events.length : ''}</span>
-              </div>
-              <div className="calendar-day-events">
-                {events.slice(0, 2).map((room) => (
-                  <span key={room.id}>{room.title}</span>
-                ))}
-                {events.length > 2 && <span>+{events.length - 2} more</span>}
-              </div>
+          <div className="calendar-nav">
+            <button className="ghost-button" onClick={() => onMonthChange(month.subtract(1, 'month'))}>
+              Prev
             </button>
-          )
-        })}
+            <button className="ghost-button" onClick={() => onMonthChange(dayjs())}>
+              Today
+            </button>
+            <button className="ghost-button" onClick={() => onMonthChange(month.add(1, 'month'))}>
+              Next
+            </button>
+            <button className="primary-button calendar-create-room-btn" onClick={onCreateRoom} type="button">
+              + Create room
+            </button>
+          </div>
+        </div>
+
+        <div className="calendar-grid">
+          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((weekday) => (
+            <div key={weekday} className="calendar-weekday">
+              {weekday}
+            </div>
+          ))}
+          {days.map((date) => {
+            const key = date.format('YYYY-MM-DD')
+            const events = scheduledByDay.get(key) ?? []
+            const isCurrentMonth = date.month() === month.month()
+            const isSelected = selectedDay === key
+
+            return (
+              <button
+                key={key}
+                className={`calendar-day ${isCurrentMonth ? '' : 'muted'} ${isSelected ? 'selected' : ''}`}
+                onClick={() => handleSelectDay(key)}
+              >
+                <div className="calendar-day-top">
+                  <span className="calendar-day-date">{date.date()}</span>
+                  {events.length > 0 ? <span className="calendar-day-count">{events.length}</span> : null}
+                </div>
+                <div className="calendar-day-events">
+                  {events.slice(0, 2).map((room) => (
+                    <span key={room.id} className="calendar-day-event-line">
+                      <em>{room.scheduledAt ? dayjs(room.scheduledAt).format('HH:mm') : '--:--'}</em>
+                      <b>{room.title}</b>
+                    </span>
+                  ))}
+                  {events.length > 2 && <span className="calendar-day-more">+{events.length - 2} more</span>}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+
       </div>
 
-      <div className="calendar-events-panel">
-        <h3>Events on {dayjs(selectedDay).format('DD/MM/YYYY')}</h3>
-        {selectedDayEvents.length === 0 ? (
-          <p className="muted-copy">No scheduled rooms for this day.</p>
-        ) : (
-          <div className="event-list">
-            {selectedDayEvents.map((room) => (
-              <button key={room.id} className="event-item" onClick={() => onOpenRoom(room.id)}>
-                <strong>{room.title}</strong>
-                <span>{formatSchedule(room.scheduledAt)}</span>
+      {dayDrawerOpen && (
+        <>
+          <button
+            className="rooms-myrooms-backdrop calendar-day-drawer-backdrop"
+            onClick={() => setDayDrawerOpen(false)}
+            type="button"
+            aria-label="Close day schedules drawer"
+          />
+          <aside className="rooms-myrooms-drawer calendar-day-drawer" role="dialog" aria-label="Day schedules">
+            <div className="rooms-myrooms-drawer-head">
+              <div className="rooms-myrooms-drawer-title">
+                <span className="rooms-myrooms-drawer-mark" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.9">
+                    <rect x="4.5" y="5.5" width="15" height="14" rx="2" />
+                    <path d="M8 3.5v4M16 3.5v4M4.5 9.5h15" />
+                  </svg>
+                </span>
+                <strong>{selectedDayLabel}</strong>
+                <span className="rooms-myrooms-drawer-total">{selectedDayEvents.length}</span>
+              </div>
+              <button
+                className="ghost-button rooms-myrooms-close"
+                onClick={() => setDayDrawerOpen(false)}
+                type="button"
+                aria-label="Close day schedules"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M6 6 18 18M18 6 6 18" />
+                </svg>
               </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+            </div>
+            <div className="rooms-myrooms-drawer-list calendar-day-drawer-list">
+              {drawerActionError && <div className="error rooms-myrooms-action-error">{drawerActionError}</div>}
+              <div className="rooms-myrooms-section-head">
+                <span>Meeting schedules</span>
+                <span className="rooms-myrooms-section-count">{selectedDayEvents.length}</span>
+                <span className="rooms-myrooms-section-line" />
+              </div>
+              {selectedDayEvents.length === 0 ? (
+                <div className="rooms-myrooms-empty-inline">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.9">
+                    <circle cx="12" cy="12" r="8" />
+                    <path d="M12 7.5v5l3 2" />
+                  </svg>
+                  <span>No scheduled rooms for this day.</span>
+                </div>
+              ) : (
+                selectedDayEvents.map((room) => renderScheduledRoomItem(room, 'drawer'))
+              )}
+            </div>
+          </aside>
+        </>
+      )}
+    </>
   )
 }
 
 function ParticipantsView({
   rooms,
+  room,
+  currentUserId,
   roomId,
   participants,
+  allParticipants,
   loading,
   query,
   inviteName,
-  inviteRole,
+  inviteLookupUser,
+  inviteLookupLoading,
   notice,
   onRoomChange,
   onQueryChange,
   onInviteNameChange,
-  onInviteRoleChange,
-  onInvite,
+  onFindInviteUser,
+  onInviteAsRole,
   onPromote,
   onCoHost,
   onAudience,
 }: {
   rooms: TalkRoom[]
+  room: TalkRoom | null
+  currentUserId: string
   roomId: string
   participants: RoomParticipant[]
+  allParticipants: RoomParticipant[]
   loading: boolean
   query: string
   inviteName: string
-  inviteRole: ParticipantRole
+  inviteLookupUser: InviteLookupUser | null
+  inviteLookupLoading: boolean
   notice: string
   onRoomChange: (value: string) => void
   onQueryChange: (value: string) => void
   onInviteNameChange: (value: string) => void
-  onInviteRoleChange: (value: ParticipantRole) => void
-  onInvite: () => Promise<void> | void
+  onFindInviteUser: () => void
+  onInviteAsRole: (role: ParticipantRole) => Promise<void> | void
   onPromote: (participant: RoomParticipant) => void
   onCoHost: (participant: RoomParticipant) => void
   onAudience: (participant: RoomParticipant) => void
 }) {
-  return (
-    <div className="participants-view">
-      <div className="participants-controls">
-        <select className="select" value={roomId} onChange={(event) => onRoomChange(event.target.value)}>
-          {rooms.map((room) => (
-            <option key={room.id} value={room.id}>
-              {room.title}
-            </option>
-          ))}
-        </select>
-        <input
-          className="input"
-          value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Search participant..."
-        />
-      </div>
+  const [activeTab, setActiveTab] = useState<'member' | 'audience'>('member')
+  const [roomSearchQuery, setRoomSearchQuery] = useState('')
+  const [isRoomSelectOpen, setIsRoomSelectOpen] = useState(false)
+  const roomCloseTimerRef = useRef<number | null>(null)
 
-      <div className="invite-box">
-        <input
-          className="input"
-          value={inviteName}
-          onChange={(event) => onInviteNameChange(event.target.value)}
-          placeholder="Add participant by username"
-        />
-        <select
-          className="select"
-          value={inviteRole}
-          onChange={(event) => onInviteRoleChange(event.target.value as ParticipantRole)}
-        >
-          <option value="member">Member</option>
-          <option value="co_host">Co-host</option>
-          <option value="audience">Audience</option>
-        </select>
-        <button className="primary-button" onClick={() => void onInvite()}>
-          Add
-        </button>
+  const memberCount = useMemo(
+    () => allParticipants.filter((participant) => participant.participantType !== 'audience').length,
+    [allParticipants],
+  )
+  const audienceCount = useMemo(
+    () => allParticipants.filter((participant) => participant.participantType === 'audience').length,
+    [allParticipants],
+  )
+  const displayedParticipants = useMemo(
+    () =>
+      participants.filter((participant) =>
+        activeTab === 'audience'
+          ? participant.participantType === 'audience'
+          : participant.participantType !== 'audience',
+      ),
+    [activeTab, participants],
+  )
+
+  const normalizedRoomSearchQuery = roomSearchQuery.trim().toLowerCase()
+  const filteredRooms = useMemo(() => {
+    if (!normalizedRoomSearchQuery) return rooms
+    return rooms.filter((item) => {
+      const searchable = `${item.title} ${item.categoryName ?? ''} ${item.hostName ?? ''} ${item.roomName ?? ''}`.toLowerCase()
+      return searchable.includes(normalizedRoomSearchQuery)
+    })
+  }, [normalizedRoomSearchQuery, rooms])
+
+  const roomTag = room?.categoryName || room?.tags?.[0] || 'Uncategorized'
+  const hasInviteCandidate = Boolean(inviteLookupUser)
+
+  const roomRoleLabel = (item: TalkRoom) =>
+    item.hostId === currentUserId || item.spaceRole === 'host' ? 'Host' : 'Co-host'
+  const roomRoleShort = (item: TalkRoom) =>
+    item.hostId === currentUserId || item.spaceRole === 'host' ? '(Ho)' : '(Co)'
+  const roomPrivacyLabel = (item: TalkRoom) => (item.isPrivate ? 'Private' : 'Public')
+  const roomPrivacyIcon = (item: TalkRoom) => (item.isPrivate ? '\uD83D\uDD12' : '\uD83C\uDF10')
+  const roomOptionLabel = (item: TalkRoom) => `${roomPrivacyIcon(item)} ${roomRoleShort(item)} ${item.title}`
+  const selectedRoomRole = room ? roomRoleLabel(room) : 'Role'
+  const selectedRoomAccess = room ? roomPrivacyLabel(room) : 'Access'
+  const selectedRoomAccessIcon = room ? roomPrivacyIcon(room) : '\uD83C\uDF10'
+  const selectedRoomLabel = room ? roomOptionLabel(room) : ''
+  const roomSearchDisplayValue = isRoomSelectOpen ? roomSearchQuery : roomSearchQuery || selectedRoomLabel
+
+  const clearRoomCloseTimer = () => {
+    if (roomCloseTimerRef.current !== null) {
+      window.clearTimeout(roomCloseTimerRef.current)
+      roomCloseTimerRef.current = null
+    }
+  }
+
+  const handleSelectRoom = (item: TalkRoom) => {
+    onRoomChange(item.id)
+    setRoomSearchQuery('')
+    setIsRoomSelectOpen(false)
+    clearRoomCloseTimer()
+  }
+
+  useEffect(() => {
+    return () => {
+      clearRoomCloseTimer()
+    }
+  }, [])
+
+  return (
+    <div className="participants-view participants-web-layout">
+      <div className="participants-top-row">
+        <div className="participants-room-block">
+          <label className="participants-room-label">Select room</label>
+          <div className="participants-room-combobox">
+            <input
+              className="input participants-room-combobox-input"
+              value={roomSearchDisplayValue}
+              onChange={(event) => setRoomSearchQuery(event.target.value)}
+              onFocus={() => {
+                clearRoomCloseTimer()
+                setIsRoomSelectOpen(true)
+              }}
+              onBlur={() => {
+                clearRoomCloseTimer()
+                roomCloseTimerRef.current = window.setTimeout(() => {
+                  setIsRoomSelectOpen(false)
+                  setRoomSearchQuery('')
+                  roomCloseTimerRef.current = null
+                }, 120)
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  if (filteredRooms[0]) {
+                    handleSelectRoom(filteredRooms[0])
+                  }
+                }
+                if (event.key === 'Escape') {
+                  clearRoomCloseTimer()
+                  setIsRoomSelectOpen(false)
+                  setRoomSearchQuery('')
+                }
+              }}
+              placeholder={rooms.length === 0 ? 'No host/co-host rooms' : 'Type to search and select room'}
+              disabled={rooms.length === 0}
+            />
+            <button
+              type="button"
+              className="ghost-button participants-room-combobox-toggle"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                clearRoomCloseTimer()
+                setIsRoomSelectOpen((prev) => !prev)
+              }}
+              aria-label="Toggle room list"
+            >
+              <svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="m5 7 5 6 5-6" />
+              </svg>
+            </button>
+            {isRoomSelectOpen && (
+              <div className="participants-room-combobox-menu">
+                {rooms.length === 0 ? (
+                  <div className="participants-room-combobox-empty">No host/co-host rooms</div>
+                ) : filteredRooms.length === 0 ? (
+                  <div className="participants-room-combobox-empty">No matching rooms</div>
+                ) : (
+                  filteredRooms.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`participants-room-combobox-item ${item.id === roomId ? 'active' : ''}`}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => handleSelectRoom(item)}
+                    >
+                      <span>{roomOptionLabel(item)}</span>
+                      <small>
+                        {roomRoleLabel(item)} • {roomPrivacyLabel(item)}
+                      </small>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+          <div className="participants-room-tags">
+            <span className="participants-room-pill participants-room-pill-role">Role: {selectedRoomRole}</span>
+            <span className="participants-room-pill participants-room-pill-access">
+              {selectedRoomAccessIcon} {selectedRoomAccess}
+            </span>
+            <span className="participants-room-pill participants-room-pill-category">{roomTag}</span>
+            <span className="participants-room-pill participants-room-pill-member">Member: {memberCount}</span>
+            <span className="participants-room-pill participants-room-pill-audience">Audience: {audienceCount}</span>
+          </div>
+          <div className="participants-room-legend" aria-hidden="true">
+            <span>(Ho) Host</span>
+            <span>(Co) Co-host</span>
+            <span>{'\uD83D\uDD12'} Private</span>
+            <span>{'\uD83C\uDF10'} Public</span>
+          </div>
+        </div>
+      </div>
+      <div className="participants-invite-panel">
+        <div className="participants-invite-head">
+          <div className="participants-invite-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.9">
+              <path d="M7 8.5h10M7 12h6M5 5.5h14v13H5z" />
+              <circle cx="9" cy="16.5" r="1.6" />
+            </svg>
+          </div>
+          <div>
+            <strong>Add member by ID</strong>
+            <p>Find user quickly and assign member/co-host.</p>
+          </div>
+        </div>
+
+        <div className="participants-invite-search">
+          <input
+            className="input"
+            value={inviteName}
+            onChange={(event) => onInviteNameChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                onFindInviteUser()
+              }
+            }}
+              placeholder="Enter ID"
+          />
+          <button
+            className="primary-button participants-invite-find-btn"
+            onClick={onFindInviteUser}
+            disabled={inviteLookupLoading}
+          >
+            {inviteLookupLoading ? 'Searching...' : 'Find user'}
+          </button>
+        </div>
+
+        {hasInviteCandidate && (
+          <div className="participants-invite-candidate">
+            <div className="participants-invite-candidate-user">
+              <span className="participants-list-avatar">
+                {inviteLookupUser?.avatar ? (
+                  <img
+                    src={inviteLookupUser.avatar}
+                    alt={inviteLookupUser.name}
+                    className="participants-list-avatar-image"
+                  />
+                ) : (
+                  inviteLookupUser?.name?.slice(0, 1).toUpperCase() ?? '?'
+                )}
+              </span>
+              <div className="participants-list-user-meta">
+                <strong>{inviteLookupUser?.name}</strong>
+                <span>@{inviteLookupUser?.username}</span>
+              </div>
+            </div>
+            <div className="participants-invite-candidate-actions">
+              <button className="primary-button" onClick={() => void onInviteAsRole('member')}>
+                Add as member
+              </button>
+              <button className="primary-button participants-invite-cohost-btn" onClick={() => void onInviteAsRole('co_host')}>
+                Add co-host
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {notice && <div className="notice">{notice}</div>}
+
+      <div className="participants-tabs">
+        <button
+          type="button"
+          className={`participants-tab ${activeTab === 'member' ? 'active' : ''}`}
+          onClick={() => setActiveTab('member')}
+        >
+          Members ({memberCount})
+        </button>
+        <button
+          type="button"
+          className={`participants-tab ${activeTab === 'audience' ? 'active' : ''}`}
+          onClick={() => setActiveTab('audience')}
+        >
+          Audience ({audienceCount})
+        </button>
+      </div>
+
+      <input
+        className="input participants-list-search"
+        value={query}
+        onChange={(event) => onQueryChange(event.target.value)}
+        placeholder="Search by name or ID"
+      />
 
       <div className="participant-list">
         {loading && (
@@ -2849,11 +3726,20 @@ function ParticipantsView({
           </div>
         )}
         {!loading &&
-          participants.map((participant) => (
+          displayedParticipants.map((participant) => (
             <div key={participant.id} className="participant-row">
-              <div>
-                <strong>{participant.name}</strong>
-                <span>{participant.username ? `@${participant.username}` : 'guest'}</span>
+              <div className="participants-list-user">
+                <span className="participants-list-avatar">
+                  {participant.avatar ? (
+                    <img src={participant.avatar} alt={participant.name} className="participants-list-avatar-image" />
+                  ) : (
+                    participant.name.slice(0, 1).toUpperCase()
+                  )}
+                </span>
+                <div className="participants-list-user-meta">
+                  <strong>{participant.name}</strong>
+                  <span>{dayjs(participant.joinedAt).isValid() ? dayjs(participant.joinedAt).format('DD/MM HH:mm') : 'Guest'}</span>
+                </div>
               </div>
               <div className="participant-row-actions">
                 <span className="chip">{roleLabel[participant.role]}</span>
@@ -2875,7 +3761,7 @@ function ParticipantsView({
               </div>
             </div>
           ))}
-        {!loading && participants.length === 0 && (
+        {!loading && displayedParticipants.length === 0 && (
           <div className="empty-state">
             <h3>No participants</h3>
             <p>Invite members or open the room to receive participants.</p>
@@ -2885,7 +3771,6 @@ function ParticipantsView({
     </div>
   )
 }
-
 
 function ProgramsView({
   onSubmitHostRequest,
@@ -2963,15 +3848,100 @@ function SettingsView({
   profile: UserProfile
   onSave: (next: UserProfile) => Promise<string | null>
 }) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [name, setName] = useState(profile.name)
   const [username, setUsername] = useState(profile.username)
+  const [avatar, setAvatar] = useState(profile.avatar)
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
 
   useEffect(() => {
     setName(profile.name)
     setUsername(profile.username)
+    setAvatar(profile.avatar)
   }, [profile])
+
+  const copyId = async () => {
+    const normalizedUsername = username.trim() || profile.username
+
+    const fallbackCopy = () => {
+      const textarea = document.createElement('textarea')
+      textarea.value = normalizedUsername
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      textarea.style.pointerEvents = 'none'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      const copied = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      return copied
+    }
+
+    try {
+      if (window.electronAPI?.copyToClipboard) {
+        const result = await window.electronAPI.copyToClipboard(normalizedUsername)
+        if (result?.success) {
+          setMessage('Copied ID to clipboard')
+          return
+        }
+      }
+
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(normalizedUsername)
+        setMessage('Copied ID to clipboard')
+        return
+      }
+
+      if (fallbackCopy()) {
+        setMessage('Copied ID to clipboard')
+        return
+      }
+
+      setMessage('Clipboard is not available.')
+    } catch {
+      if (fallbackCopy()) {
+        setMessage('Copied ID to clipboard')
+      } else {
+        setMessage('Could not copy ID to clipboard')
+      }
+    }
+  }
+
+  const onSelectAvatar = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    const extension = file.name.split('.').pop()?.trim().toLowerCase() ?? ''
+    if (!extension) {
+      setMessage('Invalid image file.')
+      return
+    }
+
+    setUploadingAvatar(true)
+    void (async () => {
+      try {
+        const target = await requestAvatarUploadTarget(extension)
+        const uploadResponse = await fetch(target.presignedUrl, {
+          method: 'PUT',
+          headers: file.type ? { 'Content-Type': file.type } : undefined,
+          body: file,
+        })
+        if (!uploadResponse.ok) {
+          throw new Error(`Upload failed (${uploadResponse.status}).`)
+        }
+
+        setAvatar(target.fileUrl)
+        setMessage('Photo uploaded. Click Update to save.')
+      } catch (error: any) {
+        setMessage(getTalkspacesApiError(error))
+      } finally {
+        setUploadingAvatar(false)
+      }
+    })()
+  }
 
   const submit = async () => {
     setLoading(true)
@@ -2979,6 +3949,7 @@ function SettingsView({
       ...profile,
       name: name.trim() || profile.name,
       username: username.trim() || profile.username,
+      avatar,
     })
 
     if (result) {
@@ -2991,24 +3962,68 @@ function SettingsView({
   }
 
   return (
-    <div className="settings-view">
-      <div className="form-card">
-        <h3>Profile settings</h3>
-        <label>
-          Display name
-          <input className="input" value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <label>
-          Username
-          <input className="input" value={username} onChange={(event) => setUsername(event.target.value)} />
-        </label>
-        <label>
-          Talkspace role
-          <input className="input" value={roleLabelForSpaceRole[profile.spaceRole]} readOnly />
-        </label>
-        <button className="primary-button" onClick={() => void submit()} disabled={loading}>
-          {loading ? 'Saving...' : 'Save'}
-        </button>
+    <div className="settings-view settings-profile-view">
+      <div className="settings-profile-heading">
+        <h2>Profile info</h2>
+        <p>Manage your profile for TalkSpaces.</p>
+      </div>
+
+      <div className="settings-profile-shell">
+        <section className="settings-profile-hero">
+          <div className="settings-profile-user">
+            <div className="settings-profile-avatar">
+              {avatar ? (
+                <img src={avatar} alt={name} className="settings-profile-avatar-image" />
+              ) : (
+                name.slice(0, 1).toUpperCase()
+              )}
+            </div>
+            <div className="settings-profile-user-meta">
+              <strong>{name || profile.name}</strong>
+              <span>@{username || profile.username}</span>
+            </div>
+          </div>
+
+          <div className="settings-profile-actions">
+            <button className="ghost-button settings-profile-copy" onClick={() => void copyId()} type="button">
+              Copy ID
+            </button>
+            <button
+              className="primary-button settings-profile-upload"
+              onClick={() => fileInputRef.current?.click()}
+              type="button"
+              disabled={uploadingAvatar}
+            >
+              {uploadingAvatar ? 'Uploading...' : 'Upload photo'}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={onSelectAvatar}
+              className="settings-profile-file-input"
+            />
+          </div>
+        </section>
+
+        <section className="settings-profile-form">
+          <label className="settings-profile-field">
+            <span>Display name</span>
+            <input className="input" value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+
+          <label className="settings-profile-field">
+            <span>Email</span>
+            <input className="input" value={profile.email} readOnly />
+          </label>
+
+          <div className="settings-profile-submit">
+            <button className="primary-button" onClick={() => void submit()} disabled={loading}>
+              {loading ? 'Saving...' : 'Update'}
+            </button>
+          </div>
+        </section>
+
         {message && <div className="notice">{message}</div>}
       </div>
     </div>
@@ -3019,27 +4034,83 @@ function CreateRoomModal({
   categories,
   onCancel,
   onCreate,
+  initialValues,
+  titleText,
+  submitLabel,
 }: {
   categories: RoomCategoryOption[]
   onCancel: () => void
   onCreate: (payload: CreateRoomInput) => Promise<string | null>
+  initialValues?: Partial<CreateRoomInput>
+  titleText?: string
+  submitLabel?: string
 }) {
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
-  const [categoryId, setCategoryId] = useState(categories[0]?.id ?? '')
-  const [maxParticipants, setMaxParticipants] = useState(50)
-  const [isPrivate, setIsPrivate] = useState(false)
-  const [audienceEnabled, setAudienceEnabled] = useState(false)
-  const [scheduledAt, setScheduledAt] = useState('')
-  const [tags, setTags] = useState('')
+  const toCategorySlug = (value: string) => {
+    const base = value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+    return base || `category-${Date.now()}`
+  }
+
+  const CREATE_CATEGORY_VALUE = '__create_category__'
+  const isEditMode = Boolean(initialValues)
+  const timeZoneLabel = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Saigon', [])
+  const [categoryOptionsLocal, setCategoryOptionsLocal] = useState<RoomCategoryOption[]>(categories)
+  const [title, setTitle] = useState(initialValues?.title ?? '')
+  const [description, setDescription] = useState(initialValues?.description ?? '')
+  const [categoryId, setCategoryId] = useState(initialValues?.categoryId ?? categories[0]?.id ?? '')
+  const [maxParticipants, setMaxParticipants] = useState(initialValues?.maxParticipants ?? 0)
+  const [isPrivate, setIsPrivate] = useState(initialValues?.isPrivate ?? false)
+  const [audienceEnabled, setAudienceEnabled] = useState(initialValues?.audienceEnabled ?? false)
+  const [scheduledAt, setScheduledAt] = useState(initialValues?.scheduledAt ?? '')
+  const [repeatWeekly, setRepeatWeekly] = useState(initialValues?.repeatWeekly ?? false)
+  const [advancedEnabled, setAdvancedEnabled] = useState(true)
+  const [showCreateCategory, setShowCreateCategory] = useState(false)
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [creatingCategory, setCreatingCategory] = useState(false)
+  const [tags, setTags] = useState((initialValues?.tags ?? []).join(', '))
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!categoryId && categories.length > 0) {
-      setCategoryId(categories[0].id)
+    setCategoryOptionsLocal((prev) => {
+      if (categories.length === 0) return prev
+      const map = new Map<string, RoomCategoryOption>()
+      prev.forEach((item) => map.set(item.id, item))
+      categories.forEach((item) => map.set(item.id, item))
+      return Array.from(map.values())
+    })
+  }, [categories])
+
+  const createCategory = async () => {
+    const name = newCategoryName.trim()
+    if (!name) {
+      setError('Category name is required.')
+      return
     }
-  }, [categories, categoryId])
+    try {
+      setError('')
+      setCreatingCategory(true)
+      const createdCategory = await createRoomCategoryApi({
+        name,
+        slug: toCategorySlug(name),
+      })
+      setCategoryOptionsLocal((prev) => {
+        const withoutDuplicate = prev.filter((item) => item.id !== createdCategory.id)
+        return [createdCategory, ...withoutDuplicate]
+      })
+      setCategoryId(createdCategory.id)
+      setNewCategoryName('')
+      setShowCreateCategory(false)
+    } catch (createError: any) {
+      setError(getTalkspacesApiError(createError))
+    } finally {
+      setCreatingCategory(false)
+    }
+  }
 
   const submit = async () => {
     if (!title.trim()) {
@@ -3058,6 +4129,7 @@ function CreateRoomModal({
       isPrivate,
       audienceEnabled,
       scheduledAt: scheduledAt || undefined,
+      repeatWeekly: scheduledAt ? repeatWeekly : false,
       tags: tags
         .split(',')
         .map((tag) => tag.trim().replace(/^#/, ''))
@@ -3073,82 +4145,174 @@ function CreateRoomModal({
 
   return (
     <div className="modal-backdrop">
-      <div className="modal">
-        <h3>Create TalkSpace room</h3>
-        <div className="modal-grid">
-          <label>
-            Room title
-            <input className="input" value={title} onChange={(event) => setTitle(event.target.value)} />
-          </label>
-          <label>
-            Category
-            <select className="select" value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
-              {categories.map((category) => (
-                <option key={category.id} value={category.id}>
-                  {category.icon} {category.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="modal-full">
-            Description
-            <textarea className="textarea" value={description} onChange={(event) => setDescription(event.target.value)} />
-          </label>
-          <label>
-            Max participants
+      <div className="modal modal-room-form">
+        <div className="modal-room-form-head">
+          <div className="modal-room-form-brand">
+            <span className="modal-room-form-brand-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <rect x="3.8" y="7" width="10.5" height="10" rx="2.1" />
+                <path d="M14.3 10.3l5.7-3.3v10l-5.7-3.3" />
+              </svg>
+            </span>
+            <div className="modal-room-form-brand-text">
+              <h3>{titleText || 'Create new room'}</h3>
+              <p>{isEditMode ? 'Update your TalkSpace room settings' : 'Configure and open your TalkSpace room'}</p>
+            </div>
+          </div>
+          <button className="modal-room-form-close" onClick={onCancel} disabled={loading} type="button" aria-label="Close form">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="modal-room-form-body">
+          <label className="modal-field modal-full">
+            <span className="modal-field-head">
+              <span className="modal-field-label">Room title</span>
+              <span className="modal-field-counter">{title.length} / 255</span>
+            </span>
             <input
               className="input"
-              type="number"
-              min={0}
-              value={maxParticipants}
-              onChange={(event) => setMaxParticipants(Number(event.target.value || 0))}
+              maxLength={255}
+              placeholder="Ex: English speaking practice together"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
             />
           </label>
-          <label>
-            Schedule (optional)
-            <input
-              className="input"
-              type="datetime-local"
-              value={scheduledAt}
-              onChange={(event) => setScheduledAt(event.target.value)}
-            />
-          </label>
-          <label className="modal-full">
-            Tags (comma separated)
-            <input className="input" value={tags} onChange={(event) => setTags(event.target.value)} />
-          </label>
-          <label className="switch-line">
-            <input
-              type="checkbox"
-              checked={isPrivate}
-              onChange={(event) => {
-                setIsPrivate(event.target.checked)
-                if (!event.target.checked) {
-                  setAudienceEnabled(false)
-                }
-              }}
-            />
-            Private room
-          </label>
-          <label className="switch-line">
-            <input
-              type="checkbox"
-              disabled={!isPrivate}
-              checked={audienceEnabled}
-              onChange={(event) => setAudienceEnabled(event.target.checked)}
-            />
-            Allow audience mode
-          </label>
+
+          <div className="modal-grid modal-grid-room-top">
+            <label className="modal-field">
+              <span className="modal-field-label">Category</span>
+              <select
+                className="select"
+                value={categoryId}
+                onChange={(event) => {
+                  const selectedValue = event.target.value
+                  if (selectedValue === CREATE_CATEGORY_VALUE) {
+                    setShowCreateCategory(true)
+                    return
+                  }
+                  setCategoryId(selectedValue)
+                }}
+              >
+                <option value="">Select category</option>
+                {categoryOptionsLocal.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+                <option value={CREATE_CATEGORY_VALUE}>+ Create category...</option>
+              </select>
+              {showCreateCategory && (
+                <div className="modal-category-create-inline">
+                  <input
+                    className="input"
+                    placeholder="New category name"
+                    value={newCategoryName}
+                    onChange={(event) => setNewCategoryName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        void createCategory()
+                      }
+                    }}
+                  />
+                  <button
+                    className="primary-button modal-category-create-btn"
+                    disabled={creatingCategory}
+                    onClick={() => void createCategory()}
+                    type="button"
+                  >
+                    {creatingCategory ? 'Creating...' : 'Create'}
+                  </button>
+                </div>
+              )}
+            </label>
+
+            <label className="modal-field modal-field-max">
+              <span className="modal-field-label">Max (0 = unlimited)</span>
+              <input
+                className="input"
+                type="number"
+                min={0}
+                value={maxParticipants}
+                onChange={(event) => {
+                  const value = Number(event.target.value)
+                  setMaxParticipants(Number.isFinite(value) ? Math.max(0, value) : 0)
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="modal-room-advanced-head">
+            <strong>Advanced</strong>
+            <label className="modal-switch" aria-label="Toggle advanced settings">
+              <input type="checkbox" checked={advancedEnabled} onChange={(event) => setAdvancedEnabled(event.target.checked)} />
+              <span className="modal-switch-track" />
+            </label>
+          </div>
+
+          {advancedEnabled && (
+            <div className="modal-room-advanced-body">
+              <label className="modal-field modal-full">
+                <span className="modal-field-label">Schedule (empty = open now)</span>
+                <input
+                  className="input"
+                  type="datetime-local"
+                  value={scheduledAt}
+                  onChange={(event) => setScheduledAt(event.target.value)}
+                />
+                <span className="modal-field-hint">Timezone: {timeZoneLabel}</span>
+              </label>
+
+              <div className={`modal-switch-row ${!scheduledAt ? 'modal-switch-row-disabled' : ''}`}>
+                <div className="modal-switch-row-copy">
+                  <span>Repeat weekly</span>
+                  <small>Reopen this room every week on this schedule</small>
+                </div>
+                <label className="modal-switch">
+                  <input
+                    type="checkbox"
+                    checked={repeatWeekly}
+                    disabled={!scheduledAt}
+                    onChange={(event) => setRepeatWeekly(event.target.checked)}
+                  />
+                  <span className="modal-switch-track" />
+                </label>
+              </div>
+
+              <div className="modal-switch-row">
+                <div className="modal-switch-row-copy">
+                  <span>Private room</span>
+                  <small>Require access code to join</small>
+                </div>
+                <label className="modal-switch">
+                  <input
+                    type="checkbox"
+                    checked={isPrivate}
+                    onChange={(event) => {
+                      setIsPrivate(event.target.checked)
+                      if (!event.target.checked) {
+                        setAudienceEnabled(false)
+                      }
+                    }}
+                  />
+                  <span className="modal-switch-track" />
+                </label>
+              </div>
+            </div>
+          )}
         </div>
 
         {error && <div className="error">{error}</div>}
 
-        <div className="modal-actions">
+        <div className="modal-actions modal-room-form-actions">
           <button className="ghost-button" onClick={onCancel} disabled={loading}>
             Cancel
           </button>
           <button className="primary-button" onClick={() => void submit()} disabled={loading}>
-            {loading ? 'Creating...' : 'Create room'}
+            {loading ? 'Saving...' : submitLabel || (isEditMode ? 'Save changes' : 'Create room')}
           </button>
         </div>
       </div>

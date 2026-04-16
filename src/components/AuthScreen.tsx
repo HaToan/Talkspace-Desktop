@@ -1,34 +1,18 @@
 import { FormEvent, useState } from 'react'
 import type { UserProfile } from '../types'
 import {
-  confirmRegistration,
   exchangeDesktopHandoffToken,
   extractApiErrorMessage,
   fetchCurrentProfile,
   loginWithPassword,
-  registerAccount,
+  submitContactRequest,
 } from '../services/auth'
 
-type AuthMode = 'signin' | 'signup'
-
-const initialRegisterForm = {
-  name: '',
-  email: '',
-  username: '',
-  password: '',
-  confirmPassword: '',
-  cccd: '',
-  phonenumber: '',
-}
-
 export default function AuthScreen({
-  runtimeVersion,
   onAuthenticated,
 }: {
-  runtimeVersion: string
   onAuthenticated: (profile: UserProfile) => void
 }) {
-  const [mode, setMode] = useState<AuthMode>('signin')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
@@ -37,8 +21,12 @@ export default function AuthScreen({
     username: '',
     password: '',
   })
-  const [registerForm, setRegisterForm] = useState(initialRegisterForm)
-  const [verifyToken, setVerifyToken] = useState('')
+  const [supportOpen, setSupportOpen] = useState(false)
+  const [supportForm, setSupportForm] = useState({
+    phone: '',
+    message: '',
+  })
+  const [supportLoading, setSupportLoading] = useState(false)
 
   const resolveGoogleApiBaseUrl = () => {
     const fromBase = String(import.meta.env.VITE_API_BASE_URL ?? '').trim()
@@ -139,55 +127,34 @@ export default function AuthScreen({
     }
   }
 
-  const submitSignup = async (event: FormEvent) => {
+  const submitSupportRequest = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    setError('')
-    setMessage('')
-    if (registerForm.password !== registerForm.confirmPassword) {
-      setError('Confirm password does not match.')
+    const phone = supportForm.phone.trim()
+    const request = supportForm.message.trim()
+    if (!phone || !request) {
+      setError('Please fill all support fields before sending.')
+      setMessage('')
       return
     }
 
-    setLoading(true)
+    setError('')
+    setSupportLoading(true)
     try {
-      await registerAccount({
-        name: registerForm.name,
-        email: registerForm.email,
-        username: registerForm.username,
-        password: registerForm.password,
-        cccd: registerForm.cccd,
-        phonenumber: registerForm.phonenumber,
+      await submitContactRequest({
+        phone,
+        message: request,
       })
-      setMessage(
-        'Register successful. Please verify your email before signing in.',
-      )
-      setMode('signin')
-      setRegisterForm(initialRegisterForm)
+      setMessage('Support request sent successfully.')
+      setSupportOpen(false)
+      setSupportForm({
+        phone: '',
+        message: '',
+      })
     } catch (err: any) {
       setError(extractApiErrorMessage(err))
+      setMessage('')
     } finally {
-      setLoading(false)
-    }
-  }
-
-  const submitVerify = async () => {
-    const token = verifyToken.trim()
-    if (!token) {
-      setError('Verify token is required.')
-      return
-    }
-    setError('')
-    setMessage('')
-    setLoading(true)
-    try {
-      await confirmRegistration(token)
-      setMessage('Account verification successful. You can sign in now.')
-      setVerifyToken('')
-      setMode('signin')
-    } catch (err: any) {
-      setError(extractApiErrorMessage(err))
-    } finally {
-      setLoading(false)
+      setSupportLoading(false)
     }
   }
 
@@ -198,195 +165,134 @@ export default function AuthScreen({
           <div className="auth-logo">TS</div>
           <div>
             <h1>TalkSpace Desktop</h1>
-            <p>{runtimeVersion}</p>
           </div>
         </div>
 
-        <div className="auth-tabs">
-          <button
-            className={`auth-tab ${mode === 'signin' ? 'active' : ''}`}
-            onClick={() => setMode('signin')}
-            type="button"
-          >
-            Sign in
-          </button>
-          <button
-            className={`auth-tab ${mode === 'signup' ? 'active' : ''}`}
-            onClick={() => setMode('signup')}
-            type="button"
-          >
-            Sign up
-          </button>
-        </div>
-
-        {mode === 'signin' ? (
-          <form className="auth-form" onSubmit={submitSignin}>
-            <label>
-              Username or email
-              <input
-                className="input"
-                value={loginForm.username}
-                onChange={(event) =>
-                  setLoginForm((prev) => ({
-                    ...prev,
-                    username: event.target.value,
-                  }))
-                }
-                required
-              />
-            </label>
-            <label>
-              Password
-              <input
-                className="input"
-                type="password"
-                value={loginForm.password}
-                onChange={(event) =>
-                  setLoginForm((prev) => ({
-                    ...prev,
-                    password: event.target.value,
-                  }))
-                }
-                required
-              />
-            </label>
-            <button className="primary-button" disabled={loading} type="submit">
-              {loading ? 'Signing in...' : 'Sign in'}
-            </button>
-            <button
-              className="ghost-button"
-              disabled={loading}
-              onClick={() => void submitGoogleSignin()}
-              type="button"
-            >
-              {loading ? 'Please wait...' : 'Continue with Google'}
-            </button>
-          </form>
-        ) : (
-          <form className="auth-form" onSubmit={submitSignup}>
-            <label>
-              Name
-              <input
-                className="input"
-                value={registerForm.name}
-                onChange={(event) =>
-                  setRegisterForm((prev) => ({ ...prev, name: event.target.value }))
-                }
-                required
-              />
-            </label>
-            <label>
-              Email
-              <input
-                className="input"
-                type="email"
-                value={registerForm.email}
-                onChange={(event) =>
-                  setRegisterForm((prev) => ({ ...prev, email: event.target.value }))
-                }
-                required
-              />
-            </label>
-            <label>
-              Username
-              <input
-                className="input"
-                value={registerForm.username}
-                onChange={(event) =>
-                  setRegisterForm((prev) => ({
-                    ...prev,
-                    username: event.target.value,
-                  }))
-                }
-                required
-              />
-            </label>
-            <label>
-              Password
-              <input
-                className="input"
-                type="password"
-                value={registerForm.password}
-                onChange={(event) =>
-                  setRegisterForm((prev) => ({
-                    ...prev,
-                    password: event.target.value,
-                  }))
-                }
-                required
-                minLength={6}
-              />
-            </label>
-            <label>
-              Confirm password
-              <input
-                className="input"
-                type="password"
-                value={registerForm.confirmPassword}
-                onChange={(event) =>
-                  setRegisterForm((prev) => ({
-                    ...prev,
-                    confirmPassword: event.target.value,
-                  }))
-                }
-                required
-                minLength={6}
-              />
-            </label>
-            <details className="auth-optional">
-              <summary>Additional information</summary>
-              <label>
-                CCCD
-                <input
-                  className="input"
-                  value={registerForm.cccd}
-                  onChange={(event) =>
-                    setRegisterForm((prev) => ({
-                      ...prev,
-                      cccd: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Phone number
-                <input
-                  className="input"
-                  value={registerForm.phonenumber}
-                  onChange={(event) =>
-                    setRegisterForm((prev) => ({
-                      ...prev,
-                      phonenumber: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-            </details>
-            <button className="primary-button" disabled={loading} type="submit">
-              {loading ? 'Creating account...' : 'Sign up'}
-            </button>
-          </form>
-        )}
-
-        <div className="auth-verify">
-          <strong>Verify registration token</strong>
-          <div className="auth-verify-row">
+        <form className="auth-form" onSubmit={submitSignin}>
+          <label>
+            Username or email
             <input
               className="input"
-              value={verifyToken}
-              onChange={(event) => setVerifyToken(event.target.value)}
-              placeholder="Paste verify token"
+              value={loginForm.username}
+              onChange={(event) =>
+                setLoginForm((prev) => ({
+                  ...prev,
+                  username: event.target.value,
+                }))
+              }
+              required
             />
-            <button
-              className="ghost-button"
-              disabled={loading}
-              type="button"
-              onClick={submitVerify}
-            >
-              Verify
-            </button>
-          </div>
-        </div>
+          </label>
+          <label>
+            Password
+            <input
+              className="input"
+              type="password"
+              value={loginForm.password}
+              onChange={(event) =>
+                setLoginForm((prev) => ({
+                  ...prev,
+                  password: event.target.value,
+                }))
+              }
+              required
+            />
+          </label>
+          <button className="primary-button" disabled={loading} type="submit">
+            {loading ? 'Signing in...' : 'Sign in'}
+          </button>
+          <button
+            className="ghost-button auth-google-button"
+            disabled={loading}
+            onClick={() => void submitGoogleSignin()}
+            type="button"
+          >
+            <svg className="auth-google-icon" viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+              <path
+                fill="#4285F4"
+                d="M17.64 9.2045c0-.6382-.0573-1.2518-.1636-1.8409H9v3.4818h4.8436a4.1409 4.1409 0 0 1-1.7964 2.7177v2.2582h2.9086c1.7023-1.5677 2.6842-3.8773 2.6842-6.6168Z"
+              />
+              <path
+                fill="#34A853"
+                d="M9 18c2.43 0 4.4673-.8059 5.9564-2.1782l-2.9086-2.2582c-.8059.54-1.8368.8591-3.0478.8591-2.3441 0-4.3282-1.5832-5.0368-3.7091H.9573v2.3318A8.9999 8.9999 0 0 0 9 18Z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M3.9632 10.7136A5.409 5.409 0 0 1 3.6818 9c0-.5959.1023-1.1755.2814-1.7136V4.9545H.9573A9 9 0 0 0 0 9c0 1.4536.3482 2.8309.9573 4.0455l3.0059-2.3319Z"
+              />
+              <path
+                fill="#EA4335"
+                d="M9 3.5773c1.3214 0 2.5077.4541 3.4405 1.3459l2.5813-2.5814C13.4636.8905 11.4264 0 9 0A8.9999 8.9999 0 0 0 .9573 4.9545l3.0059 2.3319C4.6718 5.1605 6.6559 3.5773 9 3.5773Z"
+              />
+            </svg>
+            <span>{loading ? 'Please wait...' : 'Continue with Google'}</span>
+          </button>
+          <button
+            className="auth-support-link"
+            type="button"
+            onClick={() => {
+              setSupportOpen((value) => !value)
+              setError('')
+              setMessage('')
+            }}
+          >
+            Need help? Leave your information
+          </button>
+        </form>
+        {supportOpen && (
+          <form className="auth-support-panel" onSubmit={submitSupportRequest}>
+            <strong className="auth-support-title">Support request</strong>
+            <label>
+              Phone number
+              <input
+                className="input"
+                value={supportForm.phone}
+                onChange={(event) =>
+                  setSupportForm((prev) => ({
+                    ...prev,
+                    phone: event.target.value,
+                  }))
+                }
+                placeholder="0974xxxxxx"
+                required
+              />
+            </label>
+            <label>
+              Need support
+              <textarea
+                className="textarea"
+                value={supportForm.message}
+                onChange={(event) =>
+                  setSupportForm((prev) => ({
+                    ...prev,
+                    message: event.target.value,
+                  }))
+                }
+                placeholder={'Contact: facebook/...\n:say something about your issue...'}
+                required
+              />
+            </label>
+            <div className="auth-support-actions">
+              <button
+                className="ghost-button"
+                type="button"
+                disabled={supportLoading}
+                onClick={() => {
+                  setSupportOpen(false)
+                  setSupportForm({
+                    phone: '',
+                    message: '',
+                  })
+                }}
+              >
+                Cancel
+              </button>
+              <button className="primary-button" type="submit">
+                {supportLoading ? 'Sending...' : 'Send support'}
+              </button>
+            </div>
+          </form>
+        )}
 
         {error && <div className="error">{error}</div>}
         {message && <div className="notice">{message}</div>}

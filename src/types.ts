@@ -28,6 +28,7 @@ export interface TalkRoom {
   hostId: string
   hostName: string
   hostUsername?: string
+  hostAvatar?: string
   participantCount: number
   maxParticipants: number
   isPrivate: boolean
@@ -65,6 +66,7 @@ export interface ChatMessage {
 export type AppPage =
   | { key: 'rooms' }
   | { key: 'calendar' }
+  | { key: 'chat' }
   | { key: 'participants' }
   | { key: 'programs' }
   | { key: 'settings' }

@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getVersions: () => ipcRenderer.invoke('app:get-versions'),
+  copyToClipboard: (text) => ipcRenderer.invoke('clipboard:write-text', { text }),
   startGoogleOAuth: (payload) => ipcRenderer.invoke('auth:google-oauth', payload),
   startGoogleOAuthExternal: (payload) =>
     ipcRenderer.invoke('auth:google-oauth-external', payload),

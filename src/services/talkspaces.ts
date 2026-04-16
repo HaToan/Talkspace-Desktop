@@ -19,6 +19,14 @@ export type RoomCategoryOption = {
   roomCount?: number
 }
 
+const normalizeRoomCategory = (category: any): RoomCategoryOption => ({
+  id: String(category?.id ?? ''),
+  name: String(category?.name ?? 'General'),
+  icon: String(category?.icon ?? ''),
+  slug: category?.slug ? String(category.slug) : undefined,
+  roomCount: typeof category?.roomCount === 'number' ? category.roomCount : undefined,
+})
+
 const normalizeRoom = (raw: ApiRoom): TalkRoom => ({
   id: String(raw?.id ?? ''),
   roomName: String(raw?.roomName ?? raw?.id ?? ''),
@@ -32,6 +40,14 @@ const normalizeRoom = (raw: ApiRoom): TalkRoom => ({
   hostId: String(raw?.host?.id ?? ''),
   hostName: String(raw?.host?.name ?? raw?.host?.username ?? 'Unknown'),
   hostUsername: String(raw?.host?.username ?? ''),
+  hostAvatar:
+    typeof raw?.host?.avatar === 'string' && raw.host.avatar.trim()
+      ? raw.host.avatar.trim()
+      : typeof raw?.host?.avatarUrl === 'string' && raw.host.avatarUrl.trim()
+        ? raw.host.avatarUrl.trim()
+        : typeof raw?.host?.image === 'string' && raw.host.image.trim()
+          ? raw.host.image.trim()
+          : undefined,
   participantCount: Number(raw?.participantCount ?? 0),
   maxParticipants: Number(raw?.maxParticipants ?? 0),
   isPrivate: Boolean(raw?.isPrivate),
@@ -81,14 +97,17 @@ const normalizeParticipant = (raw: ApiParticipant): RoomParticipant => {
 export const listRoomCategories = async (): Promise<RoomCategoryOption[]> => {
   const response = await apiClient.get('/api/v1/room-categories?withCount=true')
   const data = unwrapData<any[]>(response.data) ?? []
-  return data.map((category) => ({
-    id: String(category?.id ?? ''),
-    name: String(category?.name ?? 'General'),
-    icon: String(category?.icon ?? ''),
-    slug: category?.slug ? String(category.slug) : undefined,
-    roomCount:
-      typeof category?.roomCount === 'number' ? category.roomCount : undefined,
-  }))
+  return data.map(normalizeRoomCategory)
+}
+
+export const createRoomCategory = async (payload: {
+  name: string
+  icon?: string
+  slug?: string
+}) => {
+  const response = await apiClient.post('/api/v1/room-categories', payload)
+  const data = unwrapData<any>(response.data)
+  return normalizeRoomCategory(data?.item ?? data?.category ?? data)
 }
 
 export const listRooms = async (params: ListRoomsParams = {}) => {
@@ -374,6 +393,93 @@ export const updateProfileSettings = async (
 export const getPublicUserByUsername = async (username: string) => {
   const response = await apiClient.get(`/api/v1/users/${encodeURIComponent(username)}`)
   return unwrapData<any>(response.data)
+}
+
+export type InviteLookupUser = {
+  id: string
+  username: string
+  name: string
+  avatar?: string
+}
+
+export type AvatarUploadTarget = {
+  presignedUrl: string
+  fileUrl: string
+}
+
+const mapInviteLookupUser = (raw: any, fallback: string): InviteLookupUser => {
+  const username = String(raw?.username ?? fallback).trim()
+  const id = String(raw?.id ?? username ?? fallback).trim()
+  const name = String(raw?.name ?? raw?.displayName ?? username ?? fallback).trim()
+  const avatar =
+    typeof raw?.avatar === 'string' && raw.avatar.trim()
+      ? raw.avatar.trim()
+      : typeof raw?.picture === 'string' && raw.picture.trim()
+        ? raw.picture.trim()
+        : typeof raw?.image === 'string' && raw.image.trim()
+          ? raw.image.trim()
+          : undefined
+  return {
+    id: id || fallback,
+    username: username || fallback,
+    name: name || fallback,
+    avatar,
+  }
+}
+
+export const findUserForInvite = async (identifier: string): Promise<InviteLookupUser> => {
+  const normalized = identifier.trim().replace(/^@/, '')
+  if (!normalized) {
+    throw new Error('ID is required.')
+  }
+
+  const response = await apiClient.get(`/api/v1/users/${encodeURIComponent(normalized)}`)
+  const data = unwrapData<any>(response.data)
+  const raw = data?.user ?? data?.item ?? data
+  const hasIdentity =
+    raw &&
+    typeof raw === 'object' &&
+    (Boolean(raw.id) || Boolean(raw.username) || Boolean(raw.name) || Boolean(raw.displayName))
+  if (!hasIdentity) {
+    throw new Error('User not found.')
+  }
+  return mapInviteLookupUser(raw, normalized)
+}
+
+export const requestAvatarUploadTarget = async (extension: string): Promise<AvatarUploadTarget> => {
+  const normalizedExt = extension.trim().replace(/^\./, '').toLowerCase()
+  if (!normalizedExt) {
+    throw new Error('Invalid image extension.')
+  }
+
+  const payload = {
+    type: 'AVATAR',
+    folder: 'pubmedias/avatar',
+    fileInformation: [{ extension: normalizedExt }],
+  }
+
+  const response = await apiClient.post('/api/v1/upload-file', payload)
+  const data = unwrapData<any>(response.data)
+  const collection = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.items)
+      ? data.items
+      : Array.isArray(data?.files)
+        ? data.files
+        : Array.isArray(data?.data)
+          ? data.data
+          : []
+  const item = collection[0] ?? data?.item ?? data
+  const presignedUrl = String(item?.presignedUrl ?? '').trim()
+  if (!presignedUrl) {
+    throw new Error('Could not get upload URL.')
+  }
+
+  const fileUrl = String(item?.fileUrl ?? item?.publicUrl ?? presignedUrl.split('?')[0] ?? '').trim()
+  return {
+    presignedUrl,
+    fileUrl,
+  }
 }
 
 export const getTalkspacesApiError = (error: any) => getApiErrorMessage(error)

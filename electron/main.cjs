@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, desktopCapturer, dialog, webContents, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, desktopCapturer, dialog, webContents, screen, clipboard } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
@@ -79,6 +79,7 @@ const conferenceShareModeState = new Map()
 const miniModeRestoreState = new Map()
 const DEFAULT_CONFERENCE_MIN_SIZE = [250, 250]
 const DEFAULT_SHARE_MODE_HEIGHT = 720
+const APP_WINDOW_BACKGROUND = '#2b3440'
 
 const getShareModeStateKey = (win) => String(win?.id || '')
 
@@ -476,7 +477,7 @@ const openConferenceWindow = async (parentWindow, payload = {}) => {
     maximizable: true,
     fullscreenable: true,
     autoHideMenuBar: true,
-    backgroundColor: '#071021',
+    backgroundColor: APP_WINDOW_BACKGROUND,
     title: conferenceWindowTitle,
     show: false,
     frame: false,
@@ -548,7 +549,7 @@ const openPrejoinWindow = async (parentWindow, payload = {}) => {
       parent: parentWindow || undefined,
       modal: Boolean(parentWindow),
       autoHideMenuBar: true,
-      backgroundColor: '#071021',
+      backgroundColor: APP_WINDOW_BACKGROUND,
       webPreferences: {
         preload: path.join(__dirname, 'prejoin-preload.cjs'),
         contextIsolation: true,
@@ -657,7 +658,7 @@ const openDesktopSourcePickerWindow = async (parentWindow) => {
       parent: parentWindow || undefined,
       modal: Boolean(parentWindow),
       autoHideMenuBar: true,
-      backgroundColor: '#071021',
+      backgroundColor: APP_WINDOW_BACKGROUND,
       webPreferences: {
         preload: path.join(__dirname, 'screen-picker-preload.cjs'),
         contextIsolation: true,
@@ -745,7 +746,7 @@ function createMainWindow() {
     minHeight: 480,
     resizable: true,
     autoHideMenuBar: true,
-    backgroundColor: '#071021',
+    backgroundColor: APP_WINDOW_BACKGROUND,
     frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -787,7 +788,7 @@ const runGoogleOauthFlow = (parentWindow, apiBaseUrl) =>
       parent: parentWindow || undefined,
       modal: Boolean(parentWindow),
       autoHideMenuBar: true,
-      backgroundColor: '#071021',
+      backgroundColor: APP_WINDOW_BACKGROUND,
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
@@ -946,6 +947,16 @@ app.whenReady().then(() => {
     node: process.versions.node,
     platform: process.platform,
   }))
+
+  ipcMain.handle('clipboard:write-text', async (_event, payload) => {
+    try {
+      const text = typeof payload?.text === 'string' ? payload.text : ''
+      clipboard.writeText(text)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error?.message || 'Could not copy text.' }
+    }
+  })
 
   ipcMain.handle('auth:google-oauth', async (_event, payload) => {
     const activeWindow = BrowserWindow.getFocusedWindow() || mainWindow

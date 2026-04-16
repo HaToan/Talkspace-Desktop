@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/vxspace/frontend/**)",
+      "Read(//d/vxspace//**)",
+      "Read(//d/vxspace/**)"
+    ]
+  }
+}

@@ -147,3 +147,13 @@ export const exchangeDesktopHandoffToken = async (token: string) => {
     setApiAccessToken(issuedAccessToken)
   }
 }
+
+export const submitContactRequest = async (payload: {
+  phone: string
+  message: string
+}) => {
+  await apiClient.post('/api/v1/contact-requests', {
+    phone: payload.phone,
+    message: payload.message,
+  })
+}

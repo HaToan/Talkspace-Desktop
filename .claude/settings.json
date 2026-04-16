@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.ts$|\\\\.tsx$\")",
+      "Bash(grep -n \"roomId\\\\|LiveVideoStage\" d:/vxspace/talkspace-desktop/src/pages/*.tsx)",
+      "Bash(npm install:*)",
+      "Bash(node -e \"require\\('@livekit/track-processors'\\); console.log\\('ok'\\)\")",
+      "Bash(npx tsc:*)",
+      "Bash(tsc --version)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(cp \"d:/vxspace/frontend/public/bg/samantha-gades-BlIhVfXbi9s-unsplash.jpg\" \"d:/vxspace/talkspace-desktop/public/backgrounds/bg-office.jpg\")",
+      "Bash(cp \"d:/vxspace/frontend/public/bg/ali-kazal-tbw_KQE3Cbg-unsplash.jpg\" \"d:/vxspace/talkspace-desktop/public/backgrounds/bg-nature.jpg\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const c=fs.readFileSync\\('node_modules/@livekit/components-react/dist/index.js','utf8'\\); const m=c.match\\(/\\\\\"lk-button[^\\\\\"]+\\\\\"/g\\)||[]; console.log\\([...new Set\\(m\\)].join\\('\\\\n'\\)\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const c=fs.readFileSync\\('node_modules/@livekit/components-react/dist/index.js','utf8'\\); const m=c.match\\(/lk-button[a-z-]*/g\\)||[]; const u=[...new Set\\(m\\)]; console.log\\(u.join\\('\\\\n'\\)\\)\")",
+      "Bash(node -e \"var fs=require\\('fs'\\); var c=fs.readFileSync\\('node_modules/@livekit/components-react/dist/index.js','utf8'\\); var m=c.match\\(/lk-button[-a-z]*/g\\)||[]; var u={}; m.forEach\\(function\\(x\\){u[x]=1;}\\); Object.keys\\(u\\).forEach\\(function\\(k\\){console.log\\(k\\);}\\)\")",
+      "Bash(node -e \"var fs=require\\('fs'\\);var c=fs.readFileSync\\('node_modules/@livekit/components-react/dist/index.js','utf8'\\);var m=c.match\\(/lk-button[-a-z]*/g\\)||[];var u={};m.forEach\\(function\\(x\\){u[x]=1;}\\);Object.keys\\(u\\).forEach\\(function\\(k\\){console.log\\(k\\);}\\)\")",
+      "Bash(node -e \"process.stdout.write\\('hello\\\\n'\\)\")",
+      "Bash(node -e \"var c=require\\('fs'\\).readFileSync\\('node_modules/@livekit/components-react/dist/index.js','utf8'\\);process.stdout.write\\(c.length+'\\\\n'\\)\")",
+      "Bash(node -e \"var c=require\\('fs'\\).readFileSync\\('node_modules/@livekit/components-react/dist/shared-iyASaIaj.js','utf8'\\);var m=c.match\\(/lk-button[-a-z]*/g\\)||[];var u={};m.forEach\\(function\\(x\\){u[x]=1;}\\);process.stdout.write\\(Object.keys\\(u\\).join\\('\\\\n'\\)+'\\\\n'\\)\")"
+    ]
+  }
+}

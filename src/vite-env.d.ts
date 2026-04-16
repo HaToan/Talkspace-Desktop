@@ -4,10 +4,12 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string
   readonly VITE_API_PROXY_TARGET?: string
   readonly VITE_LIVEKIT_URL?: string
+  readonly VITE_SUPPORT_FORM_URL?: string
   readonly NEXT_PUBLIC_BASE_URL?: string
   readonly NEXT_PUBLIC_DOMAIN?: string
   readonly NEXT_PUBLIC_DOMAIN_AUTH?: string
   readonly NEXT_PUBLIC_LIVEKIT_URL?: string
+  readonly NEXT_PUBLIC_SUPPORT_FORM_URL?: string
 }
 
 declare global {
@@ -18,6 +20,10 @@ declare global {
         chrome: string
         node: string
         platform: string
+      }>
+      copyToClipboard: (text: string) => Promise<{
+        success: boolean
+        error?: string
       }>
       startGoogleOAuth: (payload: {
         apiBaseUrl: string
