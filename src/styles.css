@@ -1560,6 +1560,80 @@ body {
   color: #5eead4;
 }
 
+/* ── Auto-update banner ─────────────────────────────────────────── */
+.update-banner {
+  margin: 8px 10px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(6, 78, 59, 0.28);
+  border: 1px solid rgba(45, 212, 191, 0.4);
+  font-size: 13px;
+  color: #5eead4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.update-banner--ready {
+  background: rgba(6, 50, 80, 0.32);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #7dd3fc;
+}
+.update-banner--error {
+  background: rgba(127, 29, 29, 0.25);
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fca5a5;
+}
+.update-banner__text {
+  line-height: 1.4;
+}
+.update-banner__actions {
+  display: flex;
+  gap: 6px;
+}
+.update-banner__btn {
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(45, 212, 191, 0.45);
+  background: rgba(45, 212, 191, 0.12);
+  color: #5eead4;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.update-banner--ready .update-banner__btn {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+}
+.update-banner__btn:hover {
+  background: rgba(45, 212, 191, 0.22);
+}
+.update-banner--ready .update-banner__btn:hover {
+  background: rgba(56, 189, 248, 0.22);
+}
+.update-banner__btn--dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.4);
+}
+.update-banner__btn--dismiss:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.update-banner__progress {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.update-banner__progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: #2dd4bf;
+  transition: width 0.3s ease;
+}
+
 .switch-line {
   display: flex;
   align-items: center;

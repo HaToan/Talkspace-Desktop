@@ -337,7 +337,15 @@ function App() {
   const [conferenceSessionByRoom, setConferenceSessionByRoom] = useState<
     Record<string, { token: string; livekitUrl?: string }>
   >({})
-  const [runtimeVersion, setRuntimeVersion] = useState('Electron')
+  const [runtimeVersion, setRuntimeVersion] = useState('')
+
+  type UpdatePhase =
+    | { phase: 'idle' }
+    | { phase: 'available'; version: string }
+    | { phase: 'downloading'; percent: number }
+    | { phase: 'ready'; version: string }
+    | { phase: 'error'; message: string }
+  const [updateState, setUpdateState] = useState<UpdatePhase>({ phase: 'idle' })
 
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('all')
@@ -391,9 +399,26 @@ function App() {
     const loadVersions = async () => {
       if (!window.electronAPI?.getVersions) return
       const versions = await window.electronAPI.getVersions()
-      setRuntimeVersion(`Electron ${versions.electron} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Node ${versions.node}`)
+      setRuntimeVersion(versions.app ? `v${versions.app}` : `Electron ${versions.electron}`)
     }
     void loadVersions()
+  }, [])
+
+  useEffect(() => {
+    const api = window.electronAPI
+    if (!api) return
+    const unsubs = [
+      api.onUpdateAvailable?.((info: { version: string }) =>
+        setUpdateState({ phase: 'available', version: info.version }),
+      ),
+      api.onDownloadProgress?.((p: { percent: number }) =>
+        setUpdateState({ phase: 'downloading', percent: Math.floor(p.percent) }),
+      ),
+      api.onUpdateDownloaded?.((info: { version: string }) =>
+        setUpdateState({ phase: 'ready', version: info.version }),
+      ),
+    ]
+    return () => { unsubs.forEach((fn) => fn?.()) }
   }, [])
 
   useEffect(() => {
@@ -1687,9 +1712,41 @@ function App() {
           <div className="brand-mark">TS</div>
           <div>
             <div className="brand-title">TalkSpace Desktop</div>
-            <div className="brand-subtitle">{runtimeVersion}</div>
+            {runtimeVersion && <div className="brand-subtitle">{runtimeVersion}</div>}
           </div>
         </div>
+        {updateState.phase !== 'idle' && (
+          <div className={`update-banner${updateState.phase === 'ready' ? ' update-banner--ready' : updateState.phase === 'error' ? ' update-banner--error' : ''}`}>
+            {updateState.phase === 'available' && (
+              <>
+                <div className="update-banner__text">Có phiên bản mới <strong>v{updateState.version}</strong></div>
+                <div className="update-banner__actions">
+                  <button className="update-banner__btn" onClick={() => window.electronAPI?.downloadUpdate?.()}>Cập nhật</button>
+                  <button className="update-banner__btn update-banner__btn--dismiss" onClick={() => setUpdateState({ phase: 'idle' })}>Bỏ qua</button>
+                </div>
+              </>
+            )}
+            {updateState.phase === 'downloading' && (
+              <>
+                <div className="update-banner__text">Đang tải... {updateState.percent}%</div>
+                <div className="update-banner__progress">
+                  <div className="update-banner__progress-fill" style={{ width: `${updateState.percent}%` }} />
+                </div>
+              </>
+            )}
+            {updateState.phase === 'ready' && (
+              <>
+                <div className="update-banner__text">Sẵn sàng cài đặt <strong>v{updateState.version}</strong></div>
+                <div className="update-banner__actions">
+                  <button className="update-banner__btn" onClick={() => window.electronAPI?.quitAndInstall?.()}>Khởi động lại</button>
+                </div>
+              </>
+            )}
+            {updateState.phase === 'error' && (
+              <div className="update-banner__text">Lỗi cập nhật: {updateState.message}</div>
+            )}
+          </div>
+        )}
         <nav className="menu">
           {[
             { key: 'rooms', label: 'Rooms' },

@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, shell, desktopCapturer, dialog, webContents
 const path = require('path')
 const fs = require('fs')
 const { execFile } = require('child_process')
+const { autoUpdater } = require('electron-updater')
 
 const loadDotenvFile = (filePath) => {
   if (!fs.existsSync(filePath)) return
@@ -815,6 +816,27 @@ const openDesktopSourcePickerWindow = async (parentWindow) => {
   })
 }
 
+const setupAutoUpdater = (win) => {
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('update-available', (info) => {
+    if (!win.isDestroyed()) win.webContents.send('updater:update-available', info)
+  })
+  autoUpdater.on('download-progress', (progress) => {
+    if (!win.isDestroyed()) win.webContents.send('updater:download-progress', progress)
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    if (!win.isDestroyed()) win.webContents.send('updater:update-downloaded', info)
+  })
+  autoUpdater.on('update-not-available', () => {
+    if (!win.isDestroyed()) win.webContents.send('updater:update-not-available')
+  })
+  autoUpdater.on('error', (err) => {
+    if (!win.isDestroyed()) win.webContents.send('updater:error', err?.message || 'Update error')
+  })
+}
+
 function createMainWindow() {
   const win = new BrowserWindow({
     width: 1440,
@@ -1011,6 +1033,13 @@ app.whenReady().then(() => {
   registerDesktopProtocolClient()
   createMainWindow()
 
+  if (!isDev && mainWindow) {
+    setTimeout(() => {
+      setupAutoUpdater(mainWindow)
+      autoUpdater.checkForUpdates().catch(() => {})
+    }, 5000)
+  }
+
   const startupDeepLink = process.argv.find(
     (arg) => typeof arg === 'string' && arg.startsWith(`${DESKTOP_AUTH_PROTOCOL}://`),
   )
@@ -1019,11 +1048,36 @@ app.whenReady().then(() => {
   }
 
   ipcMain.handle('app:get-versions', () => ({
+    app: app.getVersion(),
     electron: process.versions.electron,
     chrome: process.versions.chrome,
     node: process.versions.node,
     platform: process.platform,
   }))
+
+  ipcMain.handle('updater:check-for-updates', async () => {
+    if (isDev) return { success: true, skipped: true }
+    try {
+      await autoUpdater.checkForUpdates()
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: e?.message }
+    }
+  })
+
+  ipcMain.handle('updater:download-update', async () => {
+    if (isDev) return { success: true, skipped: true }
+    try {
+      await autoUpdater.downloadUpdate()
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: e?.message }
+    }
+  })
+
+  ipcMain.handle('updater:quit-and-install', () => {
+    autoUpdater.quitAndInstall(false, true)
+  })
 
   ipcMain.handle('clipboard:write-text', async (_event, payload) => {
     try {

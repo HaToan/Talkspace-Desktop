@@ -1,0 +1,48 @@
+appId: com.vxspace.talkspace-desktop
+productName: TalkSpace
+directories:
+  output: release
+
+files:
+  - dist/**/*
+  - electron/**/*
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: TalkSpace-Setup-${version}.exe
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  artifactName: TalkSpace-${version}-${arch}.${ext}
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  artifactName: TalkSpace-${version}-${arch}.AppImage
+  category: Network
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+# Uncomment and configure one of the following publish providers before releasing:
+#
+# GitHub Releases:
+# publish:
+#   provider: github
+#   owner: your-org
+#   repo: talkspace-desktop
+#
+# Custom / S3-compatible server:
+# publish:
+#   provider: generic
+#   url: https://your-server/releases/

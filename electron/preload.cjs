@@ -25,4 +25,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setCurrentWindowResizable: (resizable) =>
     ipcRenderer.invoke('window:set-resizable', { resizable: Boolean(resizable) }),
   saveRecording: (payload) => ipcRenderer.invoke('recording:save', payload),
+
+  // Auto-updater
+  checkForUpdates: () => ipcRenderer.invoke('updater:check-for-updates'),
+  downloadUpdate: () => ipcRenderer.invoke('updater:download-update'),
+  quitAndInstall: () => ipcRenderer.invoke('updater:quit-and-install'),
+  onUpdateAvailable: (cb) => {
+    const fn = (_e, info) => cb(info)
+    ipcRenderer.on('updater:update-available', fn)
+    return () => ipcRenderer.removeListener('updater:update-available', fn)
+  },
+  onDownloadProgress: (cb) => {
+    const fn = (_e, progress) => cb(progress)
+    ipcRenderer.on('updater:download-progress', fn)
+    return () => ipcRenderer.removeListener('updater:download-progress', fn)
+  },
+  onUpdateDownloaded: (cb) => {
+    const fn = (_e, info) => cb(info)
+    ipcRenderer.on('updater:update-downloaded', fn)
+    return () => ipcRenderer.removeListener('updater:update-downloaded', fn)
+  },
 })
