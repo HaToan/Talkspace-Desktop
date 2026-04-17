@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pickDesktopSource: () => ipcRenderer.invoke('media:pick-desktop-source'),
   getCurrentWindowSource: () => ipcRenderer.invoke('media:get-current-window-source'),
   getScreenSourceForAudio: () => ipcRenderer.invoke('media:get-screen-source-for-audio'),
+  resizeSourceWindow: (payload) => ipcRenderer.invoke('media:resize-source-window', payload),
   openPrejoinWindow: (payload) => ipcRenderer.invoke('prejoin:open', payload),
   openConferenceWindow: (payload) => ipcRenderer.invoke('conference:open-room', payload),
   closeCurrentWindow: () => ipcRenderer.invoke('window:close-current'),

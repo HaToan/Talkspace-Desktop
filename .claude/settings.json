@@ -24,7 +24,9 @@
       "Bash(awk 'NR>100 && NR<130')",
       "Bash(node -e \"const p = require\\('./node_modules/ffmpeg-static'\\); console.log\\(p\\); const fs = require\\('fs'\\); console.log\\('exists:', fs.existsSync\\(p\\)\\)\")",
       "Bash(\"d:/vxspace/talkspace-desktop/node_modules/ffmpeg-static/ffmpeg.exe\" -version)",
-      "Bash(grep -v \"css\\\\|CSS\\\\|style\\\\|Style\\\\|\\\\\\\\.desktop\\\\|className.*desktop\")"
+      "Bash(grep -v \"css\\\\|CSS\\\\|style\\\\|Style\\\\|\\\\\\\\.desktop\\\\|className.*desktop\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

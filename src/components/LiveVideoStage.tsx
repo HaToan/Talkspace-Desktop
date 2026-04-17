@@ -745,7 +745,7 @@ function SettingsPanel({
                 {remoteParticipants.map((p) => {
                   const displayName = p.name || p.identity || 'Unknown'
                   return (
-                    <div key={p.identity} className="desktop-vc-settings__kick-row">
+                    <div key={p.identity} className={`desktop-vc-settings__kick-row${p.isSpeaking ? ' is-speaking' : ''}`}>
                       <span className="desktop-vc-settings__kick-name">{displayName}</span>
                       <button
                         type="button"
@@ -844,9 +844,11 @@ function ConnectionGuard({
 function ElectronScreenShareButton({
   canShare,
   onMessage,
+  shareTargetSize,
 }: {
   canShare: boolean
   onMessage: (message: string) => void
+  shareTargetSize?: { width: number; height: number }
 }) {
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant()
   const [pending, setPending] = useState(false)
@@ -987,6 +989,14 @@ function ElectronScreenShareButton({
           onMessage('')
           return
         }
+        // Resize the picked window to match the recording frame
+        if (pickedSource.kind === 'window' && shareTargetSize && window.electronAPI?.resizeSourceWindow) {
+          await window.electronAPI.resizeSourceWindow({
+            sourceId: pickedSource.id,
+            width: shareTargetSize.width,
+            height: shareTargetSize.height,
+          }).catch(() => {/* ignore resize failure, share still proceeds */})
+        }
         await startFallbackShare(pickedSource.id)
         await enterMiniModeAfterShare()
         onMessage('')
@@ -1086,7 +1096,15 @@ function DesktopControlBar({
         disabled={!canPublish}
         onDeviceError={(error) => onMessage(`Camera failed: ${error.message}`)}
       />
-      <ElectronScreenShareButton canShare={canPublish} onMessage={onMessage} />
+      <ElectronScreenShareButton
+        canShare={canPublish}
+        onMessage={onMessage}
+        shareTargetSize={(() => {
+          const q = RECORDING_QUALITY_CONFIGS[recordingQuality]
+          const stripW = Math.round(q.width / 5)
+          return { width: q.width - stripW, height: q.height }
+        })()}
+      />
       <div className="desktop-vc-record-wrap">
         <button
           className={`lk-button desktop-vc-record-btn${recordingEnabled ? ' desktop-vc-record-btn--active' : ''}`}
@@ -1319,7 +1337,10 @@ function DesktopConference({
   const currentWebmPathRef = useRef<string | null>(null)
   const recordingIsH264Ref = useRef(false)
   const recordingFolderRef = useRef<string | null>(null)
+  const resolveAvatarRef = useRef(resolveParticipantAvatar)
   const pendingWritesRef = useRef<Promise<void>>(Promise.resolve())
+  useEffect(() => { resolveAvatarRef.current = resolveParticipantAvatar }, [resolveParticipantAvatar])
+
   const canvasCaptureRef = useRef<{
     canvas: HTMLCanvasElement
     rafId: number | null
@@ -1328,6 +1349,8 @@ function DesktopConference({
     windowStream: MediaStream | null
     audioContext: AudioContext | null
     capturedAudioTracks: MediaStreamTrack[]
+    cameraVideoPool: Map<string, HTMLVideoElement>
+    avatarImageCache: Map<string, HTMLImageElement | 'loading' | 'error'>
   } | null>(null)
   const leaveAfterRecordingRef = useRef(false)
   const room = useRoomContext()
@@ -1904,6 +1927,9 @@ function DesktopConference({
         void canvasCaptureRef.current.audioContext.close()
         canvasCaptureRef.current.audioContext = null
       }
+      canvasCaptureRef.current.cameraVideoPool.forEach((camEl) => { camEl.srcObject = null })
+      canvasCaptureRef.current.cameraVideoPool.clear()
+      canvasCaptureRef.current.avatarImageCache.clear()
       canvasCaptureRef.current = null
     }
     if (recordingStreamRef.current) {
@@ -1928,6 +1954,7 @@ function DesktopConference({
       if (result.success && result.mp4Path) {
         const name = result.mp4Path.split(/[\\/]/).pop() ?? 'recording.mp4'
         onMessage(`MP4 ready: ${name}`)
+        setTimeout(() => onMessage(''), 4000)
       } else if (!result.success) {
         onMessage(`MP4 conversion failed: ${result.error || 'unknown'}`)
       }
@@ -2072,10 +2099,13 @@ function DesktopConference({
       windowStream,
       audioContext,
       capturedAudioTracks,
+      cameraVideoPool: new Map<string, HTMLVideoElement>(),
+      avatarImageCache: new Map<string, HTMLImageElement | 'loading' | 'error'>(),
     }
     canvasCaptureRef.current = capture
 
     const drawFrame = () => {
+      // ── Layer 1: overall background ────────────────────────────────────
       context.fillStyle = '#071021'
       context.fillRect(0, 0, quality.width, quality.height)
 
@@ -2094,16 +2124,197 @@ function DesktopConference({
           void el.play().catch(() => {})
           capture.screenShareVideoEl = el
         }
+
+        // Participant camera strip — 1/5 of canvas width on the right
+        const stripW = Math.round(quality.width / 5)
+        const ssAreaW = quality.width - stripW
+
+        // ── Layer 2: left frame background (share screen area) ─────────────
+        context.fillStyle = '#0d1525'
+        context.fillRect(0, 0, ssAreaW, quality.height)
+
+        // ── Layer 3: right frame background — muted purple ────────────────
+        context.fillStyle = '#12102A'
+        context.fillRect(ssAreaW, 0, stripW, quality.height)
+
+        // Draw screen share in the left area (contain — full content visible, centered)
         const el = capture.screenShareVideoEl
         if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && el.videoWidth > 0) {
-          // Letterbox to preserve aspect ratio
-          const ar = el.videoWidth / el.videoHeight
-          const cAr = quality.width / quality.height
-          let dx = 0, dy = 0, dw = quality.width, dh = quality.height
-          if (ar > cAr) { dh = quality.width / ar; dy = (quality.height - dh) / 2 }
-          else { dw = quality.height * ar; dx = (quality.width - dw) / 2 }
+          const srcAr = el.videoWidth / el.videoHeight
+          const dstAr = ssAreaW / quality.height
+          let dw = ssAreaW, dh = quality.height, dx = 0, dy = 0
+          if (srcAr > dstAr) {
+            // source wider → fit width, letterbox top/bottom
+            dh = ssAreaW / srcAr
+            dy = Math.round((quality.height - dh) / 2)
+          } else {
+            // source taller → fit height, letterbox left/right
+            dw = quality.height * srcAr
+            dx = Math.round((ssAreaW - dw) / 2)
+          }
           context.drawImage(el, dx, dy, dw, dh)
         }
+
+        const allParticipants = [room.localParticipant, ...room.remoteParticipants.values()]
+
+        // Build tile list — every participant, camera on or off
+        const tiles = allParticipants.map((p) => {
+          const camPub = [...p.trackPublications.values()]
+            .find((pub) => pub.source === Track.Source.Camera)
+          const cameraOn = !!(camPub?.track?.mediaStreamTrack && !camPub.isMuted)
+          const sid = camPub?.trackSid ?? `avatar-${p.identity}`
+          if (cameraOn && camPub?.track?.mediaStreamTrack) {
+            if (!capture.cameraVideoPool.has(sid)) {
+              const camEl = document.createElement('video')
+              camEl.muted = true; camEl.playsInline = true; camEl.autoplay = true
+              camEl.srcObject = new MediaStream([camPub.track.mediaStreamTrack])
+              void camEl.play().catch(() => {})
+              capture.cameraVideoPool.set(sid, camEl)
+            }
+          }
+          return { sid, cameraOn, name: p.name ?? '', participant: p, videoEl: capture.cameraVideoPool.get(sid) ?? null }
+        })
+
+        // Clean stale pool entries
+        const liveSids = new Set(tiles.map((t) => t.sid))
+        capture.cameraVideoPool.forEach((camEl, sid) => {
+          if (!liveSids.has(sid)) { camEl.srcObject = null; capture.cameraVideoPool.delete(sid) }
+        })
+
+        // Tile dimensions — gap between tiles, vertically centered in the strip
+        const tileGap = 15          // fixed gap between tiles (canvas px)
+        const tileMarginLeft = 20   // gap between share screen and participant strip (canvas px)
+        const tileMarginRight = 12  // padding-right inside participant strip
+        const finalTileW = stripW - tileMarginLeft - tileMarginRight
+        const tileH = Math.round(finalTileW * 9 / 16)
+        const totalTilesH = tiles.length * tileH + Math.max(0, tiles.length - 1) * tileGap
+        const scale = totalTilesH > quality.height ? quality.height / totalTilesH : 1
+        const finalTileH = Math.round(tileH * scale)
+        const finalGap = Math.round(tileGap * scale)
+        const tileX = ssAreaW + tileMarginLeft
+        const totalScaledH = tiles.length * finalTileH + Math.max(0, tiles.length - 1) * finalGap
+        const startY = Math.round((quality.height - totalScaledH) / 2)
+
+        tiles.forEach(({ cameraOn, name, participant, videoEl }, i) => {
+          const tx = tileX
+          const ty = startY + i * (finalTileH + finalGap)
+          const tw = finalTileW
+          const th = finalTileH
+          const tileRadius = Math.max(4, Math.round(Math.min(tw, th) * 0.08))
+
+          // Clip to rounded rect for this tile
+          context.save()
+          context.beginPath()
+          context.roundRect(tx, ty, tw, th, tileRadius)
+          context.clip()
+
+          if (cameraOn && videoEl &&
+              videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && videoEl.videoWidth > 0) {
+            context.drawImage(videoEl, tx, ty, tw, th)
+          } else {
+            // Camera off — dark background
+            context.fillStyle = '#111827'
+            context.fillRect(tx, ty, tw, th)
+
+            const cx = tx + tw / 2
+            const cy = ty + th / 2
+            const r = Math.round(Math.min(tw, th) * 0.27)
+
+            // Try to get avatar URL via resolveParticipantAvatar
+            const avatarUrl = resolveAvatarRef.current(participant)
+            const cacheKey = avatarUrl || `__noavatar__${participant.identity}`
+
+            if (avatarUrl) {
+              const cached = capture.avatarImageCache.get(avatarUrl)
+              if (!cached) {
+                // Start loading — draw initial as placeholder this frame
+                capture.avatarImageCache.set(avatarUrl, 'loading')
+                const img = new Image()
+                img.crossOrigin = 'anonymous'
+                img.onload = () => capture.avatarImageCache.set(avatarUrl, img)
+                img.onerror = () => capture.avatarImageCache.set(avatarUrl, 'error')
+                img.src = avatarUrl
+              } else if (cached instanceof HTMLImageElement) {
+                // Draw circular avatar image
+                context.save()
+                context.beginPath()
+                context.arc(cx, cy, r, 0, Math.PI * 2)
+                context.clip()
+                context.drawImage(cached, cx - r, cy - r, r * 2, r * 2)
+                context.restore()
+              }
+              // 'loading' or 'error' — fall through to initial/icon below
+            }
+
+            const avatarDrawn = avatarUrl && capture.avatarImageCache.get(avatarUrl) instanceof HTMLImageElement
+            if (!avatarDrawn && name) {
+              // Colored circle + first initial
+              const hue = [...name].reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360
+              context.beginPath()
+              context.arc(cx, cy, r, 0, Math.PI * 2)
+              context.fillStyle = `hsl(${hue}, 45%, 38%)`
+              context.fill()
+              context.save()
+              context.fillStyle = '#ffffff'
+              context.font = `bold ${Math.round(r * 0.95)}px sans-serif`
+              context.textAlign = 'center'
+              context.textBaseline = 'middle'
+              context.fillText(name[0].toUpperCase(), cx, cy)
+              context.restore()
+            } else if (!avatarDrawn) {
+              // Generic person icon
+              context.fillStyle = '#374151'
+              context.beginPath()
+              context.arc(cx, cy, r, 0, Math.PI * 2)
+              context.fill()
+              context.fillStyle = '#9ca3af'
+              context.beginPath()
+              context.arc(cx, cy - r * 0.22, r * 0.36, 0, Math.PI * 2)
+              context.fill()
+              context.save()
+              context.beginPath()
+              context.arc(cx, cy, r, 0, Math.PI * 2)
+              context.clip()
+              context.beginPath()
+              context.arc(cx, cy + r * 0.82, r * 0.56, 0, Math.PI * 2)
+              context.fillStyle = '#9ca3af'
+              context.fill()
+              context.restore()
+            }
+          }
+
+          // Name label — bottom-left of every tile
+          if (name) {
+            const fontSize = Math.max(9, Math.round(th * 0.09))
+            const pad = Math.round(fontSize * 0.5)
+            const labelY = ty + th - pad
+            context.font = `${fontSize}px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`
+            const textW = context.measureText(name).width
+            // Semi-transparent background pill
+            context.fillStyle = 'rgba(0,0,0,0.55)'
+            context.beginPath()
+            context.roundRect(tx + pad - 3, labelY - fontSize, textW + 6, fontSize + pad * 0.6, 3)
+            context.fill()
+            // Name text
+            context.fillStyle = '#ffffff'
+            context.textAlign = 'left'
+            context.textBaseline = 'alphabetic'
+            context.fillText(name, tx + pad, labelY)
+          }
+
+          // End rounded-rect clip for this tile
+          context.restore()
+
+          // Border around tile (drawn outside clip so it's fully visible)
+          context.save()
+          context.strokeStyle = 'rgba(51, 65, 85, 0.85)'
+          context.lineWidth = 1.5
+          context.beginPath()
+          context.roundRect(tx + 0.75, ty + 0.75, tw - 1.5, th - 1.5, tileRadius)
+          context.stroke()
+          context.restore()
+        })
+
       } else {
         // No screen share — clean up helper element and use window capture for tiles
         if (capture.screenShareVideoEl) {
@@ -3371,6 +3582,8 @@ export default function LiveVideoStage(props: Props) {
           overflow: hidden;
           isolation: isolate;
           background: #04070d;
+          border-radius: 16px;
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
         }
         .desktop-vc-shell .desktop-vc-focus-stage .desktop-vc-focus-video-stack::after {
           content: '';
@@ -3575,6 +3788,7 @@ export default function LiveVideoStage(props: Props) {
           padding: 0 !important;
           align-items: stretch !important;
           gap: 0 !important;
+          background: #0F172A;
         }
         .desktop-vc-shell .desktop-vc-drawer--settings > .desktop-vc-settings {
           width: 100%;
@@ -3891,6 +4105,7 @@ export default function LiveVideoStage(props: Props) {
           display: flex;
           flex-direction: column;
           gap: 6px;
+          padding: 8px;
         }
         .desktop-vc-shell .desktop-vc-settings__speaker-row,
         .desktop-vc-shell .desktop-vc-settings__kick-row {
@@ -3898,16 +4113,26 @@ export default function LiveVideoStage(props: Props) {
           flex-direction: column;
           gap: 0;
           padding: 0;
-          border-radius: 7px;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.07);
+          border-radius: 8px;
+          background: #1E293B;
+          border: 1px solid #334155;
           overflow: hidden;
+          transition: background 120ms ease, border-color 120ms ease;
         }
         .desktop-vc-shell .desktop-vc-settings__kick-row {
           flex-direction: row;
           align-items: center;
           gap: 8px;
           padding: 6px 8px;
+        }
+        .desktop-vc-shell .desktop-vc-settings__kick-row:hover,
+        .desktop-vc-shell .desktop-vc-settings__speaker-row:hover {
+          background: #273449;
+        }
+        .desktop-vc-shell .desktop-vc-settings__kick-row.is-speaking,
+        .desktop-vc-shell .desktop-vc-settings__speaker-row.is-speaking {
+          border-color: #6366F1;
+          border-left: 4px solid #6366F1;
         }
         .desktop-vc-shell .desktop-vc-settings__speaker-top {
           display: flex;

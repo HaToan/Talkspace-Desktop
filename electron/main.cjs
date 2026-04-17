@@ -485,7 +485,7 @@ const openConferenceWindow = async (parentWindow, payload = {}) => {
 
   const win = new BrowserWindow({
     width: 1280,
-    height: 840,
+    height: 836,
     minWidth: DEFAULT_CONFERENCE_MIN_SIZE[0],
     minHeight: DEFAULT_CONFERENCE_MIN_SIZE[1],
     resizable: true,
@@ -1179,6 +1179,53 @@ app.whenReady().then(() => {
     }
 
     return null
+  })
+
+  // Resize an external window (by desktopCapturer sourceId) to target dimensions
+  ipcMain.handle('media:resize-source-window', async (_e, { sourceId, width, height }) => {
+    if (process.platform !== 'win32') return { success: false, error: 'Windows only' }
+
+    const parts = String(sourceId || '').split(':')
+    if (parts[0] !== 'window') return { success: false, error: 'Not a window source' }
+    const hwnd = parseInt(parts[1], 10)
+    if (!hwnd || isNaN(hwnd)) return { success: false, error: 'Invalid HWND' }
+
+    const w = Math.round(Number(width))
+    const h = Math.round(Number(height))
+
+    const { execFile } = require('child_process')
+    const os = require('os')
+    const fs = require('fs')
+    const pathMod = require('path')
+
+    const script = [
+      'Add-Type -TypeDefinition @"',
+      'using System;',
+      'using System.Runtime.InteropServices;',
+      'public class WinResizeUtil {',
+      '  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int n);',
+      '  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr ins, int x, int y, int cx, int cy, uint f);',
+      '}',
+      '"@',
+      `[WinResizeUtil]::ShowWindow([IntPtr]${hwnd}, 9)`,
+      `[WinResizeUtil]::SetWindowPos([IntPtr]${hwnd}, [IntPtr]::Zero, 0, 0, ${w}, ${h}, 22)`,
+    ].join('\r\n')
+
+    const tmpFile = pathMod.join(os.tmpdir(), `ts_resize_${hwnd}.ps1`)
+    fs.writeFileSync(tmpFile, script, 'utf8')
+
+    return new Promise((resolve) => {
+      execFile(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmpFile],
+        { timeout: 8000 },
+        (err) => {
+          try { fs.unlinkSync(tmpFile) } catch {}
+          if (err) resolve({ success: false, error: err.message })
+          else resolve({ success: true })
+        },
+      )
+    })
   })
 
   // Returns a primary screen source ID for loopback audio capture (no dialog)

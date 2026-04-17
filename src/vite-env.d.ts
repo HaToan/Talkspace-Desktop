@@ -65,6 +65,7 @@ declare global {
         | null
       >
       getScreenSourceForAudio: () => Promise<{ id: string } | null>
+      resizeSourceWindow: (payload: { sourceId: string; width: number; height: number }) => Promise<{ success: boolean; error?: string }>
       getCurrentWindowSource: () => Promise<
         | {
             id: string
