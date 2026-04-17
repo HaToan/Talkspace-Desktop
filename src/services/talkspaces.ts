@@ -360,6 +360,56 @@ export const saveRoomRecord = async (
   await apiClient.post(`/api/v1/rooms/${encodeURIComponent(roomId)}/records`, payload)
 }
 
+export type RoomRecordItem = {
+  id: string
+  title: string
+  url: string
+  date: string
+  category?: {
+    id: string
+    name: string
+    slug?: string
+  } | null
+  ownerUserId?: string | null
+  ownerUsername?: string | null
+  createdAt?: string
+  updatedAt?: string
+}
+
+export const listRoomRecords = async (
+  roomId: string,
+  params: { offset?: number; limit?: number } = {},
+): Promise<{ items: RoomRecordItem[]; total: number }> => {
+  const response = await apiClient.get(`/api/v1/rooms/${encodeURIComponent(roomId)}/records`, {
+    params: {
+      offset: params.offset ?? 0,
+      limit: params.limit ?? 20,
+    },
+  })
+  const data = unwrapData<any>(response.data)
+  const items = Array.isArray(data?.items) ? data.items : []
+  return {
+    items: items.map((raw: any) => ({
+      id: String(raw?.id ?? ''),
+      title: String(raw?.title ?? ''),
+      url: String(raw?.url ?? ''),
+      date: String(raw?.date ?? ''),
+      category: raw?.category
+        ? {
+            id: String(raw.category.id ?? ''),
+            name: String(raw.category.name ?? ''),
+            slug: raw.category.slug ? String(raw.category.slug) : undefined,
+          }
+        : null,
+      ownerUserId: raw?.ownerUserId ? String(raw.ownerUserId) : null,
+      ownerUsername: raw?.ownerUsername ? String(raw.ownerUsername) : null,
+      createdAt: raw?.createdAt ? String(raw.createdAt) : undefined,
+      updatedAt: raw?.updatedAt ? String(raw.updatedAt) : undefined,
+    })),
+    total: Number(data?.total ?? items.length),
+  }
+}
+
 export const updateProfileSettings = async (
   username: string,
   payload: {

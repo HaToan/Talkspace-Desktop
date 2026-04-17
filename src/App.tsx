@@ -31,6 +31,7 @@ import {
   leaveRoom as leaveRoomApi,
   listFavoriteRooms,
   listMyRooms,
+  listRoomRecords,
   listRoomCategories,
   listRoomUsers,
   listSpeakerRequests,
@@ -1601,7 +1602,7 @@ function App() {
     }
 
     if (page.key === 'recordings') {
-      return <RecordingsView />
+      return <RecordingsView currentUserId={profile.id} />
     }
 
     if (page.key === 'settings') {
@@ -3970,8 +3971,11 @@ type RecordingFile = {
   youtubeUploadedAt?: number
 }
 
-function RecordingsView() {
+function RecordingsView({ currentUserId }: { currentUserId: string }) {
   const api = (window as any).electronAPI
+  const PARTICIPANT_RECORDS_PAGE_SIZE = 10
+  const participantHistoryInFlightRef = useRef(false)
+  const participantHistoryLoadPromiseRef = useRef<Promise<void> | null>(null)
   const [files, setFiles] = useState<RecordingFile[]>([])
   const [loading, setLoading] = useState(false)
   const [ytStatus, setYtStatus] = useState<{ connected: boolean; configured: boolean; channelTitle?: string; channelId?: string } | null>(null)
@@ -4009,6 +4013,23 @@ function RecordingsView() {
     backendNextRetryAt?: number
     source?: string
     title?: string
+  }>>([])
+  const [historyMode, setHistoryMode] = useState<'host' | 'participants'>('host')
+  const [participantHistoryLoading, setParticipantHistoryLoading] = useState(false)
+  const [participantHistoryPagingRoomId, setParticipantHistoryPagingRoomId] = useState<string | null>(null)
+  const [participantHistoryGroups, setParticipantHistoryGroups] = useState<Array<{
+    roomId: string
+    roomLabel: string
+    total: number
+    currentPage: number
+    pageSize: number
+    items: Array<{
+      id: string
+      title: string
+      url: string
+      date: string
+      categoryName?: string
+    }>
   }>>([])
 
   const loadFiles = useCallback(async () => {
@@ -4296,6 +4317,146 @@ function RecordingsView() {
       .sort((a, b) => Number(b.items[0]?.uploadedAt || 0) - Number(a.items[0]?.uploadedAt || 0))
   }, [uploadHistory])
 
+  const loadParticipantHistory = useCallback(async () => {
+    if (participantHistoryLoadPromiseRef.current) return participantHistoryLoadPromiseRef.current
+    const run = async () => {
+      if (participantHistoryInFlightRef.current) return
+      participantHistoryInFlightRef.current = true
+      setParticipantHistoryLoading(true)
+      try {
+        const rooms: TalkRoom[] = await listMyRooms()
+        const participantRooms = rooms.filter((room: TalkRoom) => String(room.hostId || '') !== String(currentUserId || ''))
+        const uniqueParticipantRooms: TalkRoom[] = []
+        const seenRoomIds = new Set<string>()
+        for (const room of participantRooms) {
+          let roomId = String(room.id || '').trim()
+          if (/^\d+$/.test(roomId)) roomId = String(Number(roomId))
+          if (!roomId || seenRoomIds.has(roomId)) continue
+          seenRoomIds.add(roomId)
+          uniqueParticipantRooms.push({ ...room, id: roomId })
+        }
+        if (!uniqueParticipantRooms.length) {
+          setParticipantHistoryGroups([])
+          return
+        }
+        const requestByRoomId = new Map<string, Promise<{ total: number; items: Array<{ id: string; title: string; url: string; date: string; categoryName?: string }> }>>()
+        const settled = await Promise.allSettled(
+          uniqueParticipantRooms.map(async (room: TalkRoom) => {
+            const roomId = String(room.id || '').trim()
+            if (!requestByRoomId.has(roomId)) {
+              requestByRoomId.set(
+                roomId,
+                listRoomRecords(roomId, { offset: 0, limit: PARTICIPANT_RECORDS_PAGE_SIZE }).then((result) => ({
+                  total: Number(result.total || 0),
+                  items: (result.items || []).map((item) => ({
+                    id: item.id,
+                    title: item.title,
+                    url: item.url,
+                    date: item.date,
+                    categoryName: item.category?.name || undefined,
+                  })),
+                })),
+              )
+            }
+            const page = await requestByRoomId.get(roomId)!
+            return {
+              roomId,
+              roomLabel: (room.title && room.title.trim()) || room.roomName || `Room ${roomId}`,
+              total: page.total,
+              currentPage: 1,
+              pageSize: PARTICIPANT_RECORDS_PAGE_SIZE,
+              items: page.items,
+            }
+          }),
+        )
+        const fulfilledGroups: Array<{
+          roomId: string
+          roomLabel: string
+          total: number
+          currentPage: number
+          pageSize: number
+          items: Array<{ id: string; title: string; url: string; date: string; categoryName?: string }>
+        }> = []
+        for (const item of settled) {
+          if (item.status !== 'fulfilled') continue
+          fulfilledGroups.push(item.value)
+        }
+        const groups = fulfilledGroups
+          .filter((group) => group.items.length > 0)
+          .map((group) => ({
+            ...group,
+            items: group.items.sort(
+              (a: { date: string }, b: { date: string }) =>
+                dayjs(b.date).valueOf() - dayjs(a.date).valueOf(),
+            ),
+          }))
+          .sort(
+            (
+              a: { items: Array<{ date: string }> },
+              b: { items: Array<{ date: string }> },
+            ) => dayjs(b.items[0]?.date || 0).valueOf() - dayjs(a.items[0]?.date || 0).valueOf(),
+          )
+        setParticipantHistoryGroups(groups)
+      } catch {
+        setParticipantHistoryGroups([])
+      } finally {
+        setParticipantHistoryLoading(false)
+        participantHistoryInFlightRef.current = false
+      }
+    }
+    const promise = run().finally(() => {
+      participantHistoryLoadPromiseRef.current = null
+    })
+    participantHistoryLoadPromiseRef.current = promise
+    return promise
+  }, [currentUserId])
+
+  const loadParticipantHistoryPage = useCallback(async (roomId: string, page: number) => {
+    const room = participantHistoryGroups.find((g) => g.roomId === roomId)
+    if (!room) return
+    const totalPages = Math.max(1, Math.ceil(Math.max(0, room.total) / Math.max(1, room.pageSize)))
+    const nextPage = Math.max(1, Math.min(totalPages, page))
+    if (nextPage === room.currentPage) return
+
+    setParticipantHistoryPagingRoomId(roomId)
+    try {
+      const result = await listRoomRecords(roomId, {
+        offset: (nextPage - 1) * room.pageSize,
+        limit: room.pageSize,
+      })
+      const nextItems = (result.items || []).map((item) => ({
+        id: item.id,
+        title: item.title,
+        url: item.url,
+        date: item.date,
+        categoryName: item.category?.name || undefined,
+      }))
+      setParticipantHistoryGroups((prev) =>
+        prev.map((group) =>
+          group.roomId === roomId
+            ? {
+                ...group,
+                total: Number(result.total || group.total || 0),
+                currentPage: nextPage,
+                items: nextItems,
+              }
+            : group,
+        ),
+      )
+    } catch {
+      // keep previous page on transient errors
+    } finally {
+      setParticipantHistoryPagingRoomId(null)
+    }
+  }, [participantHistoryGroups])
+
+  const handleHistoryModeChange = useCallback((mode: 'host' | 'participants') => {
+    setHistoryMode(mode)
+    if (mode === 'participants' && participantHistoryGroups.length === 0) {
+      void loadParticipantHistory()
+    }
+  }, [participantHistoryGroups.length, loadParticipantHistory])
+
   return (
     <div className="recordings-view">
       <div className="recordings-view__header">
@@ -4308,7 +4469,17 @@ function RecordingsView() {
           <button className="recordings-view__browse" onClick={handleChooseRecordingFolder} disabled={pickingFolder} title="Select recording folder" type="button">
             {pickingFolder ? 'Opening…' : 'Browse'}
           </button>
-          <button className="recordings-view__refresh" onClick={loadFiles} title="Refresh" type="button">
+          <button
+            className="recordings-view__refresh"
+            onClick={() => {
+              void loadFiles()
+              if (historyMode === 'participants') {
+                void loadParticipantHistory()
+              }
+            }}
+            title="Refresh"
+            type="button"
+          >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5" />
             </svg>
@@ -4519,36 +4690,102 @@ function RecordingsView() {
         </div>
       )}
 
-      {uploadHistory.length > 0 && (
-        <div className="recordings-view__list">
+      <div className="recordings-view__list">
+        <div className="recordings-view__section-head">
           <div className="recordings-view__section-label">Uploaded history</div>
-          {groupedUploadHistory.map((group) => (
-            <div key={group.key}>
-              <div className="recordings-view__section-label">{group.label} ({group.items.length})</div>
-              {group.items.slice(0, 20).map((h) => (
-                <div key={h.id} className="recordings-view__item">
+          <div className="recordings-view__history-switch" role="tablist" aria-label="Uploaded history mode">
+            <button
+              className={`recordings-view__history-switch-btn ${historyMode === 'host' ? 'active' : ''}`}
+              onClick={() => handleHistoryModeChange('host')}
+              type="button"
+            >
+              Host
+            </button>
+            <button
+              className={`recordings-view__history-switch-btn ${historyMode === 'participants' ? 'active' : ''}`}
+              onClick={() => handleHistoryModeChange('participants')}
+              type="button"
+            >
+              Participants
+            </button>
+          </div>
+        </div>
+
+        {historyMode === 'host' ? (
+          uploadHistory.length > 0 ? (
+            groupedUploadHistory.map((group) => (
+              <div key={group.key}>
+                <div className="recordings-view__section-label">{group.label} ({group.items.length})</div>
+                {group.items.slice(0, 20).map((h) => (
+                  <div key={h.id} className="recordings-view__item">
+                    <div className="recordings-view__item-icon" aria-hidden="true">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="#FF0000">
+                        <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                      </svg>
+                    </div>
+                    <div className="recordings-view__item-info">
+                      <span className="recordings-view__item-name" title={h.title || h.filename}>
+                        {formatUploadHistoryTitle(h)}
+                      </span>
+                      <span className="recordings-view__item-meta">
+                        Uploaded {new Date(h.uploadedAt).toLocaleString()}
+                        {h.source ? ` | ${h.source}` : ''}
+                        {h.backendSyncedAt
+                          ? ' | Sync: Synced'
+                          : h.roomId
+                            ? ` | Sync: Not synced${h.backendSyncError ? ' (retrying)' : ''}`
+                            : ' | Sync: Not synced (missing room)'}
+                      </span>
+                    </div>
+                    <div className="recordings-view__item-actions">
+                      {h.youtubeUrl ? (
+                        <a className="recordings-view__action" href={h.youtubeUrl} target="_blank" rel="noreferrer" title="Open video">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z" />
+                            <path d="M5 5h6v2H7v10h10v-4h2v6H5z" />
+                          </svg>
+                        </a>
+                      ) : (
+                        <button className="recordings-view__action" type="button" disabled title="Video link unavailable">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z" />
+                            <path d="M5 5h6v2H7v10h10v-4h2v6H5z" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))
+          ) : (
+            <div className="recordings-view__inline-empty">No host uploaded history.</div>
+          )
+        ) : participantHistoryLoading ? (
+          <div className="recordings-view__inline-empty">Loading participant records...</div>
+        ) : participantHistoryGroups.length > 0 ? (
+          participantHistoryGroups.map((group) => (
+            <div key={group.roomId}>
+              <div className="recordings-view__section-label">{group.roomLabel} ({group.items.length})</div>
+              {group.items.map((item) => (
+                <div key={item.id} className="recordings-view__item">
                   <div className="recordings-view__item-icon" aria-hidden="true">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="#FF0000">
                       <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
                     </svg>
                   </div>
                   <div className="recordings-view__item-info">
-                    <span className="recordings-view__item-name" title={h.title || h.filename}>
-                      {h.title}
+                    <span className="recordings-view__item-name" title={item.title}>
+                      {item.title}
                     </span>
                     <span className="recordings-view__item-meta">
-                      Uploaded {new Date(h.uploadedAt).toLocaleString()}
-                      {h.source ? ` | ${h.source}` : ''}
-                      {h.backendSyncedAt
-                        ? ' | Sync: Synced'
-                        : h.roomId
-                          ? ` | Sync: Not synced${h.backendSyncError ? ' (retrying)' : ''}`
-                          : ' | Sync: Not synced (missing room)'}
+                      Published {dayjs(item.date).isValid() ? dayjs(item.date).format('DD MMM YYYY HH:mm') : item.date}
+                      {item.categoryName ? ` | ${item.categoryName}` : ''}
                     </span>
                   </div>
                   <div className="recordings-view__item-actions">
-                    {h.youtubeUrl ? (
-                      <a className="recordings-view__action" href={h.youtubeUrl} target="_blank" rel="noreferrer" title="Open video">
+                    {item.url ? (
+                      <a className="recordings-view__action" href={item.url} target="_blank" rel="noreferrer" title="Open video">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                           <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z" />
                           <path d="M5 5h6v2H7v10h10v-4h2v6H5z" />
@@ -4565,10 +4802,27 @@ function RecordingsView() {
                   </div>
                 </div>
               ))}
+              {group.total > group.pageSize && (
+                <div className="recordings-view__pager">
+                  {Array.from({ length: Math.max(1, Math.ceil(group.total / group.pageSize)) }, (_, idx) => idx + 1).map((pageNo) => (
+                    <button
+                      key={`${group.roomId}:${pageNo}`}
+                      className={`recordings-view__pager-btn ${group.currentPage === pageNo ? 'active' : ''}`}
+                      onClick={() => { void loadParticipantHistoryPage(group.roomId, pageNo) }}
+                      disabled={participantHistoryPagingRoomId === group.roomId}
+                      type="button"
+                    >
+                      {pageNo}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          ))}
-        </div>
-      )}
+          ))
+        ) : (
+          <div className="recordings-view__inline-empty">No participant records found.</div>
+        )}
+      </div>
 
       {/* File list */}
       <div className="recordings-view__list">

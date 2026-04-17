@@ -1052,8 +1052,6 @@ function DesktopControlBar({
   onToggleRecording,
   recordingQuality,
   onLeaveRequested,
-  showRecordings,
-  onToggleRecordings,
 }: {
   audience: boolean
   onMessage: (message: string) => void
@@ -1066,8 +1064,6 @@ function DesktopControlBar({
   onToggleRecording: () => void
   recordingQuality: RecordingQualityPreset
   onLeaveRequested: () => void
-  showRecordings: boolean
-  onToggleRecordings: () => void
 }) {
   const { localParticipant } = useLocalParticipant()
   const layoutContext = useMaybeLayoutContext()
@@ -1143,22 +1139,6 @@ function DesktopControlBar({
               ? `Stop recording · ${RECORDING_QUALITY_CONFIGS[recordingQuality].label}`
               : `Record · ${RECORDING_QUALITY_CONFIGS[recordingQuality].label}`}
           </span>
-        </button>
-      </div>
-      <div className="desktop-vc-record-wrap">
-        <button
-          className={`lk-button desktop-vc-recordings-toggle${showRecordings ? ' desktop-vc-recordings-toggle--active' : ''}`}
-          aria-pressed={showRecordings}
-          onClick={onToggleRecordings}
-          title="Recordings"
-          type="button"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M3 7a2 2 0 0 1 2-2h3l2 2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            <line x1="8" y1="13" x2="16" y2="13" />
-            <line x1="8" y1="16" x2="13" y2="16" />
-          </svg>
-          <span className="desktop-vc-recordings-tooltip" role="tooltip">Recordings</span>
         </button>
       </div>
       <div className="desktop-vc-reactions-wrap">
@@ -2908,15 +2888,6 @@ function DesktopConference({
             onToggleRecording={toggleRecording}
             recordingQuality={recordingQuality}
             onLeaveRequested={handleLeaveRequested}
-            showRecordings={showRecordings}
-            onToggleRecordings={() => {
-              const next = !showRecordings
-              setShowRecordings(next)
-              if (next) {
-                if (widgetState.showChat) layoutContext.widget.dispatch?.({ msg: 'toggle_chat' })
-                if (widgetState.showSettings) layoutContext.widget.dispatch?.({ msg: 'toggle_settings' })
-              }
-            }}
           />
         </div>
         <ReactionOverlay reactions={reactions} />
