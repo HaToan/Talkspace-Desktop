@@ -1042,6 +1042,7 @@ function ElectronScreenShareButton({
 
 function DesktopControlBar({
   audience,
+  canRecord,
   onMessage,
   onReact,
   chatBadgeCount,
@@ -1054,6 +1055,7 @@ function DesktopControlBar({
   onLeaveRequested,
 }: {
   audience: boolean
+  canRecord: boolean
   onMessage: (message: string) => void
   onReact: (code: string) => void
   chatBadgeCount: number
@@ -1110,7 +1112,7 @@ function DesktopControlBar({
         <button
           className={`lk-button desktop-vc-record-btn${recordingEnabled ? ' desktop-vc-record-btn--active' : ''}`}
           onClick={onToggleRecording}
-          disabled={recordingPending}
+          disabled={recordingPending || (!canRecord && !recordingEnabled)}
           type="button"
           aria-label={recordingEnabled ? 'Stop recording' : 'Record meeting'}
           aria-pressed={recordingEnabled}
@@ -2561,6 +2563,10 @@ function DesktopConference({
 
   const startRecording = useCallback(async () => {
     if (recordingPending || recordingEnabled) return
+    if (!isHost) {
+      onMessage('Only room host can start recording.')
+      return
+    }
     setRecordingPending(true)
     try {
       // Ask for folder once per session
@@ -2657,7 +2663,7 @@ function DesktopConference({
       setRecordingEnabled(false); setRecordingPending(false)
       onMessage(err?.message || 'Unable to start recording.')
     }
-  }, [recordingPending, recordingEnabled, recordingQuality, roomId, roomName, roomCategory, roomCategoryId, roomTitle, createRoomVideoOnlyStream, persistRecording, stopRecordingStream, onMessage])
+  }, [recordingPending, recordingEnabled, isHost, recordingQuality, roomId, roomName, roomCategory, roomCategoryId, roomTitle, createRoomVideoOnlyStream, persistRecording, stopRecordingStream, onMessage])
 
   const stopRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current
@@ -2878,6 +2884,7 @@ function DesktopConference({
           </div>
           <DesktopControlBar
             audience={audience}
+            canRecord={isHost}
             onMessage={onMessage}
             onReact={sendReaction}
             chatBadgeCount={Number(widgetState.unreadMessages || 0)}
@@ -2986,10 +2993,6 @@ export default function LiveVideoStage(props: Props) {
     const normalizedSet = new Set<string>()
     // Include room host identifiers
     const baseHints = [hostId, hostUsername, hostName]
-    // If current user has management rights (admin/co-host/etc.), also treat their identity as host
-    if (canManage) {
-      baseHints.push(localUsername, localUserName)
-    }
     for (const value of baseHints) {
       const normalized = normalizeKey(value)
       if (!normalized) continue
@@ -3001,7 +3004,7 @@ export default function LiveVideoStage(props: Props) {
       }
     }
     return Array.from(normalizedSet)
-  }, [hostId, hostName, hostUsername, canManage, localUsername, localUserName])
+  }, [hostId, hostName, hostUsername])
   const avatarMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const [rawKey, rawValue] of Object.entries(participantAvatarMap)) {

@@ -573,6 +573,11 @@ function App() {
     }
   }, [authProfile, page.key])
 
+  const canAccessRecordings = useMemo(
+    () => myRooms.some((room) => room.hostId === profile.id),
+    [myRooms, profile.id],
+  )
+
   useEffect(() => {
     if (page.key === 'detail') {
       setPage({ key: 'rooms' })
@@ -586,10 +591,14 @@ function App() {
       setPage({ key: 'rooms' })
       return
     }
+    if (page.key === 'recordings' && !canAccessRecordings) {
+      setPage({ key: 'rooms' })
+      return
+    }
     if (page.key === 'conference' && !rooms.some((room) => room.id === page.roomId)) {
       setPage({ key: 'rooms' })
     }
-  }, [isHostSpaceRole, page, rooms])
+  }, [canAccessRecordings, isHostSpaceRole, page, rooms])
 
   const selectedRoom = useMemo(() => {
     if (page.key !== 'detail' && page.key !== 'conference') return null
@@ -1770,7 +1779,7 @@ function App() {
             { key: 'calendar', label: 'Calendar' },
             { key: 'chat', label: 'Chat' },
             ...(isHostSpaceRole ? [{ key: 'participants', label: 'Participants' }] : []),
-            { key: 'recordings', label: 'Recordings' },
+            ...(canAccessRecordings ? [{ key: 'recordings', label: 'Recordings' }] : []),
           ].map((item) => (
             <button
               key={item.key}
@@ -2132,11 +2141,16 @@ function RoomsView({
                   disabled={isRoomActionLoading}
                   onClick={(event) => {
                     event.stopPropagation()
-                    void runDrawerAction(`${room.id}:reopen`, () => onReopenRoom(room.id))
+                    void runDrawerAction(`${room.id}:open`, async () => {
+                      const reopenResult = await onReopenRoom(room.id)
+                      if (reopenResult) return reopenResult
+                      onOpenRoom(room.id)
+                      return null
+                    })
                   }}
                   type="button"
                 >
-                  Reopen room
+                  Open room
                 </button>
               )}
             </div>
@@ -2176,11 +2190,11 @@ function RoomsView({
           </p>
           <h2><strong>TalkSpace</strong></h2>
           <p className="hero-subtitle">
-            {openRooms.length} phong dang mo
+            {openRooms.length} open rooms
           </p>
         </div>
         <button className="primary-button" onClick={onCreateRoom}>
-          + Tao phong
+          + Create room
         </button>
       </div>
 
@@ -2195,7 +2209,7 @@ function RoomsView({
               className="input rooms-search-input"
               value={search}
               onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="Tim theo ten phong hoac danh muc..."
+              placeholder="Search by room name or category..."
             />
           </div>
           <button
@@ -2220,7 +2234,7 @@ function RoomsView({
             onClick={() => onCategoryFilterChange('all')}
             type="button"
           >
-            Tat ca
+            All
           </button>
           {categoryChips.map((category) => (
             <button
@@ -2266,7 +2280,7 @@ function RoomsView({
                 <div className="room-card-stage">
                   <span className={`room-stage-status room-stage-status-${room.status}`}>
                     <span className="room-stage-status-dot" />
-                    {room.status === 'open' ? 'Dang mo' : room.status === 'scheduled' ? 'Sap mo' : 'Da dong'}
+                    {room.status === 'open' ? 'Open' : room.status === 'scheduled' ? 'Scheduled' : 'Closed'}
                   </span>
                   <div className="room-stage-icons">
                     {room.isPrivate && (
@@ -2377,7 +2391,7 @@ function RoomsView({
                 className="rooms-myrooms-search-input"
                 value={myRoomsSearch}
                 onChange={(event) => setMyRoomsSearch(event.target.value)}
-                placeholder="Tim theo ten phong hoac danh muc..."
+                placeholder="Search by room name or category..."
               />
               {myRoomsSearch && (
                 <button
@@ -2468,8 +2482,8 @@ function RoomDetailView({
   const [joining, setJoining] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [actionError, setActionError] = useState('')
-  const [micEnabled, setMicEnabled] = useState(initialPrejoinSettings?.micEnabled ?? true)
-  const [camEnabled, setCamEnabled] = useState(initialPrejoinSettings?.camEnabled ?? true)
+  const [micEnabled, setMicEnabled] = useState(initialPrejoinSettings?.micEnabled ?? false)
+  const [camEnabled, setCamEnabled] = useState(initialPrejoinSettings?.camEnabled ?? false)
   const [backgroundMode, setBackgroundMode] = useState<PrejoinDeviceSettings['backgroundMode']>(
     initialPrejoinSettings?.backgroundMode ?? 'none',
   )
@@ -2505,8 +2519,8 @@ function RoomDetailView({
     setActionError('')
     setJoining(false)
     setActionLoading(false)
-    setMicEnabled(initialPrejoinSettings?.micEnabled ?? true)
-    setCamEnabled(initialPrejoinSettings?.camEnabled ?? true)
+    setMicEnabled(initialPrejoinSettings?.micEnabled ?? false)
+    setCamEnabled(initialPrejoinSettings?.camEnabled ?? false)
     setBackgroundMode(initialPrejoinSettings?.backgroundMode ?? 'none')
     setSelectedAudioInputId(initialPrejoinSettings?.microphoneDeviceId ?? '')
     setSelectedAudioOutputId(initialPrejoinSettings?.speakerDeviceId ?? '')
@@ -3367,11 +3381,17 @@ function CalendarView({
                 </button>
                 <button
                   className="rooms-myrooms-action-wide rooms-myrooms-action-reopen"
-                  disabled={isRoomActionLoading || room.status === 'open'}
+                  disabled={isRoomActionLoading}
                   onClick={(event) => {
                     event.stopPropagation()
-                    if (room.status === 'open') return
-                    void runDrawerAction(`${room.id}:reopen`, () => onReopenRoom(room.id))
+                    void runDrawerAction(`${room.id}:open`, async () => {
+                      if (room.status !== 'open') {
+                        const reopenResult = await onReopenRoom(room.id)
+                        if (reopenResult) return reopenResult
+                      }
+                      onOpenRoom(room.id)
+                      return null
+                    })
                   }}
                   type="button"
                 >
