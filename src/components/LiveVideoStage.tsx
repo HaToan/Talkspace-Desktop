@@ -32,6 +32,7 @@ import {
 } from '@livekit/components-react'
 import { ConnectionState, LocalTrackPublication, Participant, Track } from 'livekit-client'
 import { BackgroundProcessor, supportsBackgroundProcessors, type BackgroundProcessorWrapper } from '@livekit/track-processors'
+import slugify from 'slugify'
 import { apiClient, getApiErrorMessage } from '../services/http'
 
 // ─── Action drop — compatible with talkspaces.action.v1 ──────────────────────
@@ -223,7 +224,7 @@ const buildRecordingFileName = () => {
 }
 
 const slugifyRoomTitle = (title: string) =>
-  title.trim().replace(/[/\\:*?"<>|]+/g, '-').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '') || 'recording'
+  slugify(String(title || ''), { lower: true, strict: true, trim: true }) || 'recording'
 
 function AvatarParticipantTile({
   resolveParticipantAvatar,
@@ -1051,6 +1052,8 @@ function DesktopControlBar({
   onToggleRecording,
   recordingQuality,
   onLeaveRequested,
+  showRecordings,
+  onToggleRecordings,
 }: {
   audience: boolean
   onMessage: (message: string) => void
@@ -1063,6 +1066,8 @@ function DesktopControlBar({
   onToggleRecording: () => void
   recordingQuality: RecordingQualityPreset
   onLeaveRequested: () => void
+  showRecordings: boolean
+  onToggleRecordings: () => void
 }) {
   const { localParticipant } = useLocalParticipant()
   const layoutContext = useMaybeLayoutContext()
@@ -1138,6 +1143,22 @@ function DesktopControlBar({
               ? `Stop recording · ${RECORDING_QUALITY_CONFIGS[recordingQuality].label}`
               : `Record · ${RECORDING_QUALITY_CONFIGS[recordingQuality].label}`}
           </span>
+        </button>
+      </div>
+      <div className="desktop-vc-record-wrap">
+        <button
+          className={`lk-button desktop-vc-recordings-toggle${showRecordings ? ' desktop-vc-recordings-toggle--active' : ''}`}
+          aria-pressed={showRecordings}
+          onClick={onToggleRecordings}
+          title="Recordings"
+          type="button"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 7a2 2 0 0 1 2-2h3l2 2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            <line x1="8" y1="13" x2="16" y2="13" />
+            <line x1="8" y1="16" x2="13" y2="16" />
+          </svg>
+          <span className="desktop-vc-recordings-tooltip" role="tooltip">Recordings</span>
         </button>
       </div>
       <div className="desktop-vc-reactions-wrap">
@@ -1294,11 +1315,205 @@ function DesktopMeetingHeader({ title, participantCount }: { title: string; part
   )
 }
 
+type RecordingFileInfo = {
+  filename: string
+  path: string
+  size: number
+  createdAt: number
+  youtubeVideoId?: string
+  youtubeUrl?: string
+  youtubeUploadedAt?: number
+}
+
+function RecordingsDrawer({ isHost, show }: { isHost: boolean; show: boolean }) {
+  const api = (window as any).electronAPI
+  const [files, setFiles] = useState<RecordingFileInfo[]>([])
+  const [loading, setLoading] = useState(false)
+  const [ytStatus, setYtStatus] = useState<{ connected: boolean; channelTitle?: string } | null>(null)
+  const [ytAuthPending, setYtAuthPending] = useState(false)
+  const [uploads, setUploads] = useState<Record<string, { progress: number; done: boolean; error?: string; videoId?: string }>>({})
+
+  const loadFiles = useCallback(async () => {
+    if (!api?.listRecordingFiles) return
+    setLoading(true)
+    try {
+      const result = await api.listRecordingFiles()
+      setFiles(result || [])
+    } finally {
+      setLoading(false)
+    }
+  }, [api])
+
+  const loadYtStatus = useCallback(async () => {
+    if (!api?.youtubeStatus) return
+    const status = await api.youtubeStatus()
+    setYtStatus(status)
+  }, [api])
+
+  useEffect(() => {
+    if (!show) return
+    loadFiles()
+    if (isHost) loadYtStatus()
+  }, [show, isHost, loadFiles, loadYtStatus])
+
+  useEffect(() => {
+    if (!api?.onYoutubeProgress) return
+    const unsubscribe = api.onYoutubeProgress((data: any) => {
+      setUploads((prev) => ({
+        ...prev,
+        [data.sessionId]: { progress: data.progress, done: data.done, error: data.error, videoId: data.videoId },
+      }))
+      if (data?.done && data?.videoId) {
+        void loadFiles()
+      }
+    })
+    return unsubscribe
+  }, [api, loadFiles])
+
+  const handleDelete = useCallback(async (file: RecordingFileInfo) => {
+    if (!api?.deleteRecordingFile) return
+    if (!confirm(`Delete "${file.filename}"?`)) return
+    await api.deleteRecordingFile({ path: file.path })
+    loadFiles()
+  }, [api, loadFiles])
+
+  const handleReveal = useCallback((file: RecordingFileInfo) => {
+    api?.revealRecordingFile?.({ path: file.path })
+  }, [api])
+
+  const handleYtAuth = useCallback(async () => {
+    if (!api?.youtubeAuth) return
+    setYtAuthPending(true)
+    try {
+      const result = await api.youtubeAuth()
+      if (result.success) setYtStatus({ connected: true, channelTitle: result.channelTitle })
+    } finally {
+      setYtAuthPending(false)
+    }
+  }, [api])
+
+  const handleYtRevoke = useCallback(async () => {
+    if (!api?.youtubeRevoke) return
+    await api.youtubeRevoke()
+    setYtStatus({ connected: false })
+  }, [api])
+
+  const handleUpload = useCallback((file: RecordingFileInfo) => {
+    if (!api?.youtubeUpload) return
+    const sessionId = `yt-${Date.now()}-${file.filename}`
+    setUploads((prev) => ({ ...prev, [sessionId]: { progress: 0, done: false } }))
+    api.youtubeUpload({
+      sessionId,
+      filePath: file.path,
+      title: file.filename.replace(/\.[^.]+$/, ''),
+      privacyStatus: 'unlisted',
+    })
+  }, [api])
+
+  function formatSize(bytes: number) {
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  }
+
+  function formatDate(ts: number) {
+    return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
+
+  const activeUploads = Object.entries(uploads).filter(([, u]) => !u.done || u.error)
+
+  return (
+    <div className={`desktop-vc-drawer desktop-vc-drawer--recordings${show ? ' desktop-vc-drawer--open' : ''}`} aria-hidden={!show}>
+      <div className="desktop-vc-settings__header">
+        <strong>Recordings</strong>
+        <span>{files.length} file{files.length !== 1 ? 's' : ''}</span>
+      </div>
+      {isHost && (
+        <div className="desktop-vc-recordings__yt-section">
+          {ytStatus?.connected ? (
+            <div className="desktop-vc-recordings__yt-connected">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="#FF0000" aria-hidden="true">
+                <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+              </svg>
+              <span className="desktop-vc-recordings__yt-label">{ytStatus.channelTitle || 'YouTube connected'}</span>
+              <button className="desktop-vc-recordings__yt-revoke" onClick={handleYtRevoke} type="button">Disconnect</button>
+            </div>
+          ) : (
+            <button className="desktop-vc-recordings__yt-connect" onClick={handleYtAuth} disabled={ytAuthPending} type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+              </svg>
+              {ytAuthPending ? 'Connecting…' : 'Connect YouTube'}
+            </button>
+          )}
+        </div>
+      )}
+      <div className="desktop-vc-recordings__list">
+        {loading && <div className="desktop-vc-recordings__empty">Loading…</div>}
+        {!loading && files.length === 0 && <div className="desktop-vc-recordings__empty">No recordings yet.</div>}
+        {files.map((file) => (
+          <div key={file.path} className="desktop-vc-recordings__item">
+            <div className="desktop-vc-recordings__item-info">
+              <span className="desktop-vc-recordings__item-name" title={file.filename}>{file.filename}</span>
+              <span className="desktop-vc-recordings__item-meta">{formatSize(file.size)} · {formatDate(file.createdAt)}</span>
+              {file.youtubeUrl ? (
+                <a className="desktop-vc-recordings__item-meta" href={file.youtubeUrl} target="_blank" rel="noreferrer">YouTube link</a>
+              ) : null}
+            </div>
+            <div className="desktop-vc-recordings__item-actions">
+              {isHost && ytStatus?.connected && (
+                <button className="desktop-vc-recordings__action-btn" onClick={() => handleUpload(file)} title="Upload to YouTube" type="button">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                  </svg>
+                </button>
+              )}
+              <button className="desktop-vc-recordings__action-btn" onClick={() => handleReveal(file)} title="Show in folder" type="button">
+                <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path d="M2 5a2 2 0 012-2h3.586A2 2 0 019 3.586l.707.707A2 2 0 0011.414 5H16a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V5z" />
+                </svg>
+              </button>
+              <button className="desktop-vc-recordings__action-btn desktop-vc-recordings__action-btn--danger" onClick={() => handleDelete(file)} title="Delete" type="button">
+                <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {activeUploads.length > 0 && (
+        <div className="desktop-vc-recordings__uploads">
+          {activeUploads.map(([sid, u]) => (
+            <div key={sid} className="desktop-vc-recordings__upload-item">
+              {u.error ? (
+                <span className="desktop-vc-recordings__upload-error">Upload failed: {u.error}</span>
+              ) : u.done ? (
+                <span className="desktop-vc-recordings__upload-done">Uploaded successfully!</span>
+              ) : (
+                <>
+                  <span className="desktop-vc-recordings__upload-label">Uploading… {Math.round(u.progress)}%</span>
+                  <div className="desktop-vc-recordings__progress-bar">
+                    <div className="desktop-vc-recordings__progress-fill" style={{ width: `${u.progress}%` }} />
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DesktopConference({
   audience,
   onMessage,
   resolveParticipantAvatar,
   roomTitle,
+  roomName,
+  roomCategory,
+  roomCategoryId,
   roomId,
   hostIdentityHints,
 }: {
@@ -1306,6 +1521,9 @@ function DesktopConference({
   onMessage: (message: string) => void
   resolveParticipantAvatar: (participant?: Participant | null) => string
   roomTitle: string
+  roomName: string
+  roomCategory?: string
+  roomCategoryId?: string
   roomId?: string
   hostIdentityHints: string[]
 }) {
@@ -1325,6 +1543,7 @@ function DesktopConference({
   const [desktopCarouselCanPrev, setDesktopCarouselCanPrev] = useState(false)
   const [desktopCarouselCanNext, setDesktopCarouselCanNext] = useState(false)
   const [settingsBadgeCount, setSettingsBadgeCount] = useState(0)
+  const [showRecordings, setShowRecordings] = useState(false)
   const [recordingEnabled, setRecordingEnabled] = useState(false)
   const [recordingPending, setRecordingPending] = useState(false)
   const [recordingDuration, setRecordingDuration] = useState(0)
@@ -1336,6 +1555,7 @@ function DesktopConference({
   const recordingSessionIdRef = useRef<string | null>(null)
   const currentWebmPathRef = useRef<string | null>(null)
   const recordingIsH264Ref = useRef(false)
+  const recordingMetaRef = useRef<{ roomId?: string; roomName?: string; roomCategory?: string; roomCategoryId?: string; roomTitle: string; firstParticipantName: string; date: string } | null>(null)
   const recordingFolderRef = useRef<string | null>(null)
   const resolveAvatarRef = useRef(resolveParticipantAvatar)
   const pendingWritesRef = useRef<Promise<void>>(Promise.resolve())
@@ -1985,6 +2205,7 @@ function DesktopConference({
     const convertResult = await window.electronAPI!.convertBackground({
       webmPath,
       isH264: recordingIsH264Ref.current,
+      recordMeta: recordingMetaRef.current || undefined,
     })
     if (!convertResult.success) {
       onMessage(`MP4 conversion failed: ${convertResult.error || 'unknown'}`)
@@ -2363,8 +2584,15 @@ function DesktopConference({
     setRecordingPending(true)
     try {
       // Ask for folder once per session
-      if (!recordingFolderRef.current && window.electronAPI?.getRecordingFolder) {
-        recordingFolderRef.current = await window.electronAPI.getRecordingFolder()
+      if (window.electronAPI?.getRecordingFolder) {
+        const savedFolder = await window.electronAPI.getRecordingFolder()
+        recordingFolderRef.current = savedFolder || recordingFolderRef.current
+      }
+      if (recordingFolderRef.current && window.electronAPI?.isRecordingFolderValid) {
+        const validResult = await window.electronAPI.isRecordingFolderValid({ folder: recordingFolderRef.current })
+        if (!validResult.valid) {
+          recordingFolderRef.current = null
+        }
       }
       if (!recordingFolderRef.current && window.electronAPI?.chooseRecordingFolder) {
         const folderResult = await window.electronAPI.chooseRecordingFolder()
@@ -2385,10 +2613,26 @@ function DesktopConference({
 
       const { mimeType, isH264 } = getSupportedRecordingMimeType()
       recordingIsH264Ref.current = isH264
+      const firstRemoteParticipant = Array.from(room.remoteParticipants.values())[0]
+      const firstParticipantName =
+        firstRemoteParticipant?.name?.trim() ||
+        firstRemoteParticipant?.identity ||
+        room.localParticipant?.name?.trim() ||
+        room.localParticipant?.identity ||
+        ''
+      recordingMetaRef.current = {
+        roomId: roomId ? String(roomId).trim() : '',
+        roomName: roomName ? String(roomName).trim() : '',
+        roomCategory: roomCategory ? String(roomCategory).trim() : '',
+        roomCategoryId: roomCategoryId ? String(roomCategoryId).trim() : '',
+        roomTitle: String(roomTitle || '').trim(),
+        firstParticipantName: String(firstParticipantName || '').trim(),
+        date: new Date().toISOString(),
+      }
       const recorderOpts: MediaRecorderOptions = { videoBitsPerSecond: qualityConfig.videoBitsPerSecond }
       if (mimeType) recorderOpts.mimeType = mimeType
 
-      // Open file directly in chosen folder: {folder}/{room-slug}/{timestamp}.webm
+      // Open file directly in chosen folder: {folder}/vxs/{room-slug}/{timestamp}.webm
       const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
       const openResult = await window.electronAPI!.openRecordingStream({
         sessionId,
@@ -2433,7 +2677,7 @@ function DesktopConference({
       setRecordingEnabled(false); setRecordingPending(false)
       onMessage(err?.message || 'Unable to start recording.')
     }
-  }, [recordingPending, recordingEnabled, recordingQuality, roomTitle, createRoomVideoOnlyStream, persistRecording, stopRecordingStream, onMessage])
+  }, [recordingPending, recordingEnabled, recordingQuality, roomId, roomName, roomCategory, roomCategoryId, roomTitle, createRoomVideoOnlyStream, persistRecording, stopRecordingStream, onMessage])
 
   const stopRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current
@@ -2502,8 +2746,15 @@ function DesktopConference({
     widgetState.showSettings ? ' desktop-vc-drawer--open' : ''
   }`
 
+  // Close recordings drawer when chat/settings open
   useEffect(() => {
-    const isDrawerOpen = widgetState.showChat || widgetState.showSettings
+    if (widgetState.showChat || widgetState.showSettings) {
+      setShowRecordings(false)
+    }
+  }, [widgetState.showChat, widgetState.showSettings])
+
+  useEffect(() => {
+    const isDrawerOpen = widgetState.showChat || widgetState.showSettings || showRecordings
     if (!isDrawerOpen) return
 
     const onPointerDown = (event: PointerEvent) => {
@@ -2511,7 +2762,7 @@ function DesktopConference({
       if (!target) return
 
       // Keep native toggle behavior stable: don't auto-close on chat/settings toggle buttons.
-      if (target.closest('.lk-chat-toggle') || target.closest('.lk-settings-toggle')) return
+      if (target.closest('.lk-chat-toggle') || target.closest('.lk-settings-toggle') || target.closest('.desktop-vc-recordings-toggle')) return
 
       // Interacting inside drawer (or device picker controls) should not close it.
       if (
@@ -2528,13 +2779,16 @@ function DesktopConference({
       if (widgetState.showSettings) {
         layoutContext.widget.dispatch?.({ msg: 'toggle_settings' })
       }
+      if (showRecordings) {
+        setShowRecordings(false)
+      }
     }
 
     document.addEventListener('pointerdown', onPointerDown)
     return () => {
       document.removeEventListener('pointerdown', onPointerDown)
     }
-  }, [layoutContext.widget, widgetState.showChat, widgetState.showSettings])
+  }, [layoutContext.widget, widgetState.showChat, widgetState.showSettings, showRecordings])
 
   return (
     <LayoutContextProvider value={layoutContext} onWidgetChange={setWidgetState}>
@@ -2654,6 +2908,15 @@ function DesktopConference({
             onToggleRecording={toggleRecording}
             recordingQuality={recordingQuality}
             onLeaveRequested={handleLeaveRequested}
+            showRecordings={showRecordings}
+            onToggleRecordings={() => {
+              const next = !showRecordings
+              setShowRecordings(next)
+              if (next) {
+                if (widgetState.showChat) layoutContext.widget.dispatch?.({ msg: 'toggle_chat' })
+                if (widgetState.showSettings) layoutContext.widget.dispatch?.({ msg: 'toggle_settings' })
+              }
+            }}
           />
         </div>
         <ReactionOverlay reactions={reactions} />
@@ -2671,6 +2934,7 @@ function DesktopConference({
             }}
           />
         </div>
+        <RecordingsDrawer isHost={isHost} show={showRecordings} />
       </div>
       <RoomAudioRenderer />
       <ConnectionStateToast />
@@ -2690,6 +2954,8 @@ type Props = {
   serverUrl?: string
   roomTitle: string
   roomName: string
+  roomCategory?: string
+  roomCategoryId?: string
   roomId?: string
   hostId?: string
   hostName?: string
@@ -2705,6 +2971,7 @@ type Props = {
   chatBadgeCount?: number
   settingsBadgeCount?: number
   pendingSpeakerRequests?: PendingSpeakerRequest[]
+  canManage?: boolean
   onToggleChat: () => void
   onLeave: () => void
   onRequestSpeaker?: () => Promise<string | null>
@@ -2716,6 +2983,8 @@ export default function LiveVideoStage(props: Props) {
     serverUrl,
     roomTitle,
     roomName,
+    roomCategory,
+    roomCategoryId,
     roomId,
     hostId,
     hostName,
@@ -2727,6 +2996,7 @@ export default function LiveVideoStage(props: Props) {
     participantAvatarMap = {},
     initialMicEnabled = false,
     initialCameraEnabled = false,
+    canManage = false,
     onLeave,
   } = props
 
@@ -2743,7 +3013,13 @@ export default function LiveVideoStage(props: Props) {
   const [retrySeed, setRetrySeed] = useState(0)
   const hostIdentityHints = useMemo(() => {
     const normalizedSet = new Set<string>()
-    for (const value of [hostId, hostUsername, hostName]) {
+    // Include room host identifiers
+    const baseHints = [hostId, hostUsername, hostName]
+    // If current user has management rights (admin/co-host/etc.), also treat their identity as host
+    if (canManage) {
+      baseHints.push(localUsername, localUserName)
+    }
+    for (const value of baseHints) {
       const normalized = normalizeKey(value)
       if (!normalized) continue
       normalizedSet.add(normalized)
@@ -2754,7 +3030,7 @@ export default function LiveVideoStage(props: Props) {
       }
     }
     return Array.from(normalizedSet)
-  }, [hostId, hostName, hostUsername])
+  }, [hostId, hostName, hostUsername, canManage, localUsername, localUserName])
   const avatarMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const [rawKey, rawValue] of Object.entries(participantAvatarMap)) {
@@ -4400,6 +4676,192 @@ export default function LiveVideoStage(props: Props) {
             font-size: 16px;
           }
         }
+        /* ── Recordings toggle button ─────────────────────────────────── */
+        .desktop-vc-recordings-toggle {
+          position: relative;
+          overflow: visible !important;
+        }
+        .desktop-vc-recordings-toggle--active {
+          color: #818cf8 !important;
+          background: rgba(99, 102, 241, 0.15) !important;
+          border-color: rgba(99, 102, 241, 0.4) !important;
+        }
+        /* ── Recordings drawer ────────────────────────────────────────── */
+        .desktop-vc-shell .desktop-vc-drawer--recordings {
+          padding: 0 !important;
+          align-items: stretch !important;
+          gap: 0 !important;
+          background: #0F172A;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        }
+        .desktop-vc-shell .desktop-vc-drawer--recordings .desktop-vc-settings__header {
+          flex-shrink: 0;
+        }
+        .desktop-vc-recordings__yt-section {
+          padding: 8px 12px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+          flex-shrink: 0;
+        }
+        .desktop-vc-recordings__yt-connected {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+        }
+        .desktop-vc-recordings__yt-label {
+          flex: 1;
+          min-width: 0;
+          font-size: 12px;
+          color: var(--vc-text);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .desktop-vc-recordings__yt-revoke {
+          background: none;
+          border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 5px;
+          color: var(--vc-text-soft);
+          font-size: 11px;
+          padding: 2px 8px;
+          cursor: pointer;
+          flex-shrink: 0;
+        }
+        .desktop-vc-recordings__yt-revoke:hover {
+          border-color: rgba(255,255,255,0.3);
+          color: var(--vc-text);
+        }
+        .desktop-vc-recordings__yt-connect {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          width: 100%;
+          background: rgba(255, 0, 0, 0.12);
+          border: 1px solid rgba(255, 0, 0, 0.3);
+          border-radius: 7px;
+          color: #fca5a5;
+          font-size: 12px;
+          padding: 6px 10px;
+          cursor: pointer;
+          transition: background 120ms ease;
+        }
+        .desktop-vc-recordings__yt-connect:hover:not(:disabled) {
+          background: rgba(255, 0, 0, 0.2);
+        }
+        .desktop-vc-recordings__yt-connect:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+        .desktop-vc-recordings__list {
+          flex: 1;
+          overflow-y: auto;
+          min-height: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          padding: 8px;
+        }
+        .desktop-vc-recordings__empty {
+          font-size: 12px;
+          color: var(--vc-text-soft);
+          text-align: center;
+          padding: 20px 0;
+        }
+        .desktop-vc-recordings__item {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          background: #1E293B;
+          border: 1px solid #334155;
+          border-radius: 8px;
+          padding: 7px 8px;
+          transition: background 120ms ease;
+        }
+        .desktop-vc-recordings__item:hover {
+          background: #273449;
+        }
+        .desktop-vc-recordings__item-info {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .desktop-vc-recordings__item-name {
+          font-size: 11px;
+          color: var(--vc-text);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .desktop-vc-recordings__item-meta {
+          font-size: 10px;
+          color: var(--vc-text-soft);
+        }
+        .desktop-vc-recordings__item-actions {
+          display: flex;
+          gap: 4px;
+          flex-shrink: 0;
+        }
+        .desktop-vc-recordings__action-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 26px;
+          height: 26px;
+          border: none;
+          border-radius: 6px;
+          background: rgba(255, 255, 255, 0.06);
+          color: var(--vc-text-soft);
+          cursor: pointer;
+          transition: background 120ms ease, color 120ms ease;
+        }
+        .desktop-vc-recordings__action-btn:hover {
+          background: rgba(255, 255, 255, 0.12);
+          color: var(--vc-text);
+        }
+        .desktop-vc-recordings__action-btn--danger:hover {
+          background: rgba(239, 68, 68, 0.2);
+          color: #f87171;
+        }
+        .desktop-vc-recordings__uploads {
+          flex-shrink: 0;
+          border-top: 1px solid rgba(255, 255, 255, 0.06);
+          padding: 8px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .desktop-vc-recordings__upload-item {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .desktop-vc-recordings__upload-label {
+          font-size: 11px;
+          color: var(--vc-text-soft);
+        }
+        .desktop-vc-recordings__upload-error {
+          font-size: 11px;
+          color: #f87171;
+        }
+        .desktop-vc-recordings__upload-done {
+          font-size: 11px;
+          color: #86efac;
+        }
+        .desktop-vc-recordings__progress-bar {
+          height: 3px;
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 2px;
+          overflow: hidden;
+        }
+        .desktop-vc-recordings__progress-fill {
+          height: 100%;
+          background: #818cf8;
+          border-radius: 2px;
+          transition: width 200ms ease;
+        }
       `}</style>
       <LiveKitRoom
         key={`${roomName}:${retrySeed}:${token}`}
@@ -4427,6 +4889,9 @@ export default function LiveVideoStage(props: Props) {
           onMessage={setActionMessage}
           resolveParticipantAvatar={resolveParticipantAvatar}
           roomTitle={roomTitle}
+          roomName={roomName}
+          roomCategory={roomCategory}
+          roomCategoryId={roomCategoryId}
           roomId={roomId}
           hostIdentityHints={hostIdentityHints}
         />

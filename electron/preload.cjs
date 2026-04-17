@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setCurrentWindowResizable: (resizable) =>
     ipcRenderer.invoke('window:set-resizable', { resizable: Boolean(resizable) }),
   getRecordingFolder: () => ipcRenderer.invoke('recording:get-folder'),
+  isRecordingFolderValid: (payload) => ipcRenderer.invoke('recording:is-folder-valid', payload),
   chooseRecordingFolder: () => ipcRenderer.invoke('recording:choose-folder'),
   openRecordingStream: (payload) => ipcRenderer.invoke('recording:open-stream', payload),
   writeRecordingChunk: (payload) => ipcRenderer.invoke('recording:write-chunk', payload),
@@ -36,6 +37,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const fn = (_e, result) => cb(result)
     ipcRenderer.on('recording:convert-done', fn)
     return () => ipcRenderer.removeListener('recording:convert-done', fn)
+  },
+  listRecordingFiles: () => ipcRenderer.invoke('recording:list-files'),
+  listRecordingUploadHistory: () => ipcRenderer.invoke('recording:list-upload-history'),
+  markRecordingUploadHistorySync: (payload) => ipcRenderer.invoke('recording:mark-upload-history-sync', payload),
+  listCurrentUploads: () => ipcRenderer.invoke('recording:list-current-uploads'),
+  autoUploadStatus: () => ipcRenderer.invoke('recording:auto-upload-status'),
+  setAutoUploadEnabled: (payload) => ipcRenderer.invoke('recording:auto-upload-set-enabled', payload),
+  deleteRecordingFile: (payload) => ipcRenderer.invoke('recording:delete-file', payload),
+  revealRecordingFile: (payload) => ipcRenderer.invoke('recording:reveal-file', payload),
+  saveYoutubeClientId: (payload) => ipcRenderer.invoke('recording:youtube-save-client-id', payload),
+  youtubeStatus: () => ipcRenderer.invoke('recording:youtube-status'),
+  youtubeAuth: () => ipcRenderer.invoke('recording:youtube-auth'),
+  youtubeRevoke: () => ipcRenderer.invoke('recording:youtube-revoke'),
+  youtubeUpload: (payload) => ipcRenderer.invoke('recording:youtube-upload', payload),
+  youtubeUploadCancel: (payload) => ipcRenderer.invoke('recording:youtube-upload-cancel', payload),
+  onYoutubeProgress: (cb) => {
+    const fn = (_e, data) => cb(data)
+    ipcRenderer.on('recording:youtube-progress', fn)
+    return () => ipcRenderer.removeListener('recording:youtube-progress', fn)
+  },
+  onYoutubeUploaded: (cb) => {
+    const fn = (_e, data) => cb(data)
+    ipcRenderer.on('recording:youtube-uploaded', fn)
+    return () => ipcRenderer.removeListener('recording:youtube-uploaded', fn)
+  },
+  onRecordingUploadsState: (cb) => {
+    const fn = (_e, data) => cb(data)
+    ipcRenderer.on('recording:uploads-state', fn)
+    return () => ipcRenderer.removeListener('recording:uploads-state', fn)
   },
 
   // Auto-updater

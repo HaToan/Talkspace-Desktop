@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import {
@@ -37,6 +37,7 @@ import {
   listRooms,
   openRoom as openRoomApi,
   requestAvatarUploadTarget,
+  saveRoomRecord,
   submitHostRequest,
   submitSpeakerRequest,
   unfavoriteRoom as unfavoriteRoomApi,
@@ -114,7 +115,7 @@ const resolveRoomMembershipRole = (room: TalkRoom, currentUserId: string): RoomM
   return 'member'
 }
 
-type SidebarNavKey = 'rooms' | 'calendar' | 'chat' | 'participants' | 'programs'
+type SidebarNavKey = 'rooms' | 'calendar' | 'chat' | 'participants' | 'programs' | 'recordings'
 
 const SidebarNavIcon = ({ id }: { id: SidebarNavKey }) => {
   if (id === 'rooms') {
@@ -157,6 +158,15 @@ const SidebarNavIcon = ({ id }: { id: SidebarNavKey }) => {
     return (
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M5 4.5h14M6.5 4.5V19.5h11V4.5M9 9h6M9 13h6" />
+      </svg>
+    )
+  }
+  if (id === 'recordings') {
+    return (
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        <line x1="8" y1="14" x2="16" y2="14" />
+        <line x1="8" y1="17" x2="13" y2="17" />
       </svg>
     )
   }
@@ -1451,7 +1461,9 @@ function App() {
           canManageSpeakerRequests={
             selectedRoom.hostId === profile.id ||
             selectedRoom.spaceRole === 'host' ||
-            selectedRoom.spaceRole === 'co_host'
+            selectedRoom.spaceRole === 'co_host' ||
+            profile.spaceRole === 'admin' ||
+            profile.spaceRole === 'host'
           }
           onLeave={() => {
             void (async () => {
@@ -1586,6 +1598,10 @@ function App() {
 
     if (page.key === 'programs') {
       return <ProgramsView onSubmitHostRequest={submitHostRequestFromPrograms} />
+    }
+
+    if (page.key === 'recordings') {
+      return <RecordingsView />
     }
 
     if (page.key === 'settings') {
@@ -1753,6 +1769,7 @@ function App() {
             { key: 'calendar', label: 'Calendar' },
             { key: 'chat', label: 'Chat' },
             ...(isHostSpaceRole ? [{ key: 'participants', label: 'Participants' }] : []),
+            { key: 'recordings', label: 'Recordings' },
           ].map((item) => (
             <button
               key={item.key}
@@ -3153,6 +3170,9 @@ function ConferenceView({
           serverUrl={livekitUrl}
           roomTitle={room.title}
           roomName={room.roomName}
+          roomCategory={room.categoryName}
+          roomCategoryId={room.categoryId}
+          roomId={room.id}
           hostId={room.hostId}
           hostName={room.hostName}
           hostUsername={room.hostUsername}
@@ -3167,6 +3187,13 @@ function ConferenceView({
           chatBadgeCount={chatUnreadCount}
           settingsBadgeCount={pendingSpeakerRequests.length}
           pendingSpeakerRequests={pendingSpeakerRequests}
+          canManage={
+            room.hostId === currentUser.id ||
+            room.spaceRole === 'host' ||
+            room.spaceRole === 'co_host' ||
+            currentUser.spaceRole === 'admin' ||
+            currentUser.spaceRole === 'host'
+          }
           onToggleChat={() => setChatOpen((value) => !value)}
           onLeave={onLeave}
           onRequestSpeaker={onRequestSpeaker}
@@ -3928,6 +3955,662 @@ function ProgramsView({
           {loading ? 'Submitting...' : 'Submit request'}
         </button>
         {message && <div className="notice">{message}</div>}
+      </div>
+    </div>
+  )
+}
+
+type RecordingFile = {
+  filename: string
+  path: string
+  size: number
+  createdAt: number
+  youtubeVideoId?: string
+  youtubeUrl?: string
+  youtubeUploadedAt?: number
+}
+
+function RecordingsView() {
+  const api = (window as any).electronAPI
+  const [files, setFiles] = useState<RecordingFile[]>([])
+  const [loading, setLoading] = useState(false)
+  const [ytStatus, setYtStatus] = useState<{ connected: boolean; configured: boolean; channelTitle?: string; channelId?: string } | null>(null)
+  const [ytAuthPending, setYtAuthPending] = useState(false)
+  const [ytAuthError, setYtAuthError] = useState('')
+  const [showClientIdInput, setShowClientIdInput] = useState(false)
+  const [clientIdInput, setClientIdInput] = useState('')
+  const [clientSecretInput, setClientSecretInput] = useState('')
+  const [savingClientId, setSavingClientId] = useState(false)
+  const [uploads, setUploads] = useState<Record<string, { filename: string; progress: number; done: boolean; error?: string; videoId?: string }>>({})
+  const [recordingFolder, setRecordingFolder] = useState<string | null>(null)
+  const [pickingFolder, setPickingFolder] = useState(false)
+  const [autoUploadEnabled, setAutoUploadEnabled] = useState(false)
+  const [savingAutoUpload, setSavingAutoUpload] = useState(false)
+  const [currentUploads, setCurrentUploads] = useState<Array<{
+    filePath: string
+    filename: string
+    progress: number
+    status: string
+    error?: string
+    source?: string
+    startedAt: number
+  }>>([])
+  const [uploadHistory, setUploadHistory] = useState<Array<{
+    id: string
+    filename: string
+    youtubeUrl?: string
+    uploadedAt: number
+    roomId?: string
+    roomName?: string
+    recordDate?: string
+    backendSyncedAt?: number
+    backendSyncError?: string
+    backendSyncRetryCount?: number
+    backendNextRetryAt?: number
+    source?: string
+    title?: string
+  }>>([])
+
+  const loadFiles = useCallback(async () => {
+    if (!api?.listRecordingFiles) return
+    setLoading(true)
+    try {
+      const result = await api.listRecordingFiles()
+      setFiles((result || []).sort((a: RecordingFile, b: RecordingFile) => b.createdAt - a.createdAt))
+    } finally {
+      setLoading(false)
+    }
+  }, [api])
+
+  const loadYtStatus = useCallback(async () => {
+    if (!api?.youtubeStatus) return
+    const status = await api.youtubeStatus()
+    setYtStatus({ configured: true, ...status })
+  }, [api])
+
+  const loadRecordingFolder = useCallback(async () => {
+    if (!api?.getRecordingFolder) return
+    const folder = await api.getRecordingFolder()
+    setRecordingFolder(folder || null)
+  }, [api])
+
+  const loadUploadHistory = useCallback(async () => {
+    if (!api?.listRecordingUploadHistory) return
+    const history = await api.listRecordingUploadHistory()
+    setUploadHistory(Array.isArray(history) ? history : [])
+  }, [api])
+  const loadCurrentUploads = useCallback(async () => {
+    if (!api?.listCurrentUploads) return
+    const list = await api.listCurrentUploads()
+    setCurrentUploads(Array.isArray(list) ? list : [])
+  }, [api])
+
+  const loadAutoUploadStatus = useCallback(async () => {
+    if (!api?.autoUploadStatus) return
+    const status = await api.autoUploadStatus()
+    setAutoUploadEnabled(Boolean(status?.enabled))
+  }, [api])
+
+  useEffect(() => {
+    loadFiles()
+    loadYtStatus()
+    loadRecordingFolder()
+    loadAutoUploadStatus()
+    loadUploadHistory()
+    loadCurrentUploads()
+  }, [loadFiles, loadYtStatus, loadRecordingFolder, loadAutoUploadStatus, loadUploadHistory, loadCurrentUploads])
+
+  useEffect(() => {
+    if (!api?.onYoutubeProgress) return
+    return api.onYoutubeProgress((data: any) => {
+      setUploads((prev) => {
+        const existing = prev[data.sessionId] || {}
+        return { ...prev, [data.sessionId]: { ...existing, progress: data.progress, done: data.done, error: data.error, videoId: data.videoId } }
+      })
+      if (data?.done && data?.videoId) {
+        void loadFiles()
+        void loadUploadHistory()
+      }
+      void loadCurrentUploads()
+    })
+  }, [api, loadFiles, loadUploadHistory, loadCurrentUploads])
+  useEffect(() => {
+    if (!api?.onRecordingUploadsState) return
+    return api.onRecordingUploadsState((rows: any[]) => {
+      setCurrentUploads(Array.isArray(rows) ? rows : [])
+    })
+  }, [api])
+  useEffect(() => {
+    if (!api?.onYoutubeUploaded) return
+    return api.onYoutubeUploaded(() => {
+      void loadUploadHistory()
+    })
+  }, [api, loadUploadHistory])
+
+  const syncBackoffMs = (retryCount: number) => {
+    const base = 30_000
+    const exp = Math.max(0, Math.min(6, retryCount))
+    return Math.min(60 * 60 * 1000, base * Math.pow(2, exp))
+  }
+
+  const syncUploadHistoryToBackend = useCallback(async () => {
+    if (!api?.markRecordingUploadHistorySync || !uploadHistory.length) return
+    const now = Date.now()
+    const pending = uploadHistory
+      .filter((item) => {
+        if (!item?.id) return false
+        if (!item?.youtubeUrl || !item?.roomId) return false
+        if (item.backendSyncedAt) return false
+        if (Number(item.backendNextRetryAt || 0) > now) return false
+        return true
+      })
+      .sort((a, b) => Number(a.uploadedAt || 0) - Number(b.uploadedAt || 0))
+      .slice(0, 3)
+
+    if (!pending.length) return
+
+    for (const item of pending) {
+      const roomId = String(item.roomId || '').trim()
+      const url = String(item.youtubeUrl || '').trim()
+      const fallbackTitle = item.filename?.replace(/\.[^.]+$/, '') || 'Recording'
+      const title = String(item.title || fallbackTitle).trim()
+      const date = String(item.recordDate || '').trim() || new Date(item.uploadedAt || Date.now()).toISOString()
+      if (!roomId || !url || !title) continue
+
+      try {
+        await saveRoomRecord(roomId, { title, url, date })
+        await api.markRecordingUploadHistorySync({
+          id: item.id,
+          backendSyncedAt: Date.now(),
+          backendSyncError: '',
+          backendSyncRetryCount: Number(item.backendSyncRetryCount || 0),
+          backendNextRetryAt: 0,
+        })
+      } catch (err: any) {
+        const status = Number(err?.response?.status || 0)
+        if (status === 409) {
+          await api.markRecordingUploadHistorySync({
+            id: item.id,
+            backendSyncedAt: Date.now(),
+            backendSyncError: '',
+            backendSyncRetryCount: Number(item.backendSyncRetryCount || 0),
+            backendNextRetryAt: 0,
+          })
+          continue
+        }
+        const retryCount = Number(item.backendSyncRetryCount || 0) + 1
+        const nextRetryAt = Date.now() + syncBackoffMs(retryCount)
+        const message = getTalkspacesApiError(err)
+        await api.markRecordingUploadHistorySync({
+          id: item.id,
+          backendSyncError: message,
+          backendSyncRetryCount: retryCount,
+          backendNextRetryAt: nextRetryAt,
+        })
+      }
+    }
+    await loadUploadHistory()
+  }, [api, uploadHistory, loadUploadHistory])
+
+  useEffect(() => {
+    void syncUploadHistoryToBackend()
+    const timer = window.setInterval(() => {
+      void syncUploadHistoryToBackend()
+    }, 30_000)
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [syncUploadHistoryToBackend])
+
+  const handleDelete = async (file: RecordingFile) => {
+    if (!window.confirm(`Delete "${file.filename}"?`)) return
+    await api?.deleteRecordingFile?.({ path: file.path })
+    loadFiles()
+  }
+
+  const handleReveal = (file: RecordingFile) => {
+    api?.revealRecordingFile?.({ path: file.path })
+  }
+
+  const handleChooseRecordingFolder = async () => {
+    if (!api?.chooseRecordingFolder) return
+    setPickingFolder(true)
+    try {
+      const result = await api.chooseRecordingFolder()
+      if (result?.success && result.folder) {
+        setRecordingFolder(result.folder)
+        await loadFiles()
+      }
+    } finally {
+      setPickingFolder(false)
+    }
+  }
+
+  const handleToggleAutoUpload = async (enabled: boolean) => {
+    if (!api?.setAutoUploadEnabled) return
+    setSavingAutoUpload(true)
+    try {
+      const result = await api.setAutoUploadEnabled({ enabled })
+      if (result?.success) setAutoUploadEnabled(Boolean(result.enabled))
+    } finally {
+      setSavingAutoUpload(false)
+    }
+  }
+
+  const handleSaveClientId = async () => {
+    const id = clientIdInput.trim()
+    if (!id) return
+    setSavingClientId(true)
+    try {
+      await api?.saveYoutubeClientId?.({ clientId: id, clientSecret: clientSecretInput.trim() })
+      setShowClientIdInput(false)
+      setClientIdInput('')
+      setClientSecretInput('')
+      await loadYtStatus()
+    } finally {
+      setSavingClientId(false)
+    }
+  }
+
+  const handleYtAuth = async () => {
+    setYtAuthError('')
+    setYtAuthPending(true)
+    try {
+      const result = await api?.youtubeAuth?.()
+      if (result?.success) {
+        setYtStatus((prev) => ({ ...prev, connected: true, configured: true, channelTitle: result.channelTitle }))
+      } else {
+        setYtAuthError(result?.error || 'Authentication failed.')
+      }
+    } catch (err: any) {
+      setYtAuthError(err?.message || 'Unexpected error.')
+    } finally {
+      setYtAuthPending(false)
+    }
+  }
+
+  const handleYtRevoke = async () => {
+    await api?.youtubeRevoke?.()
+    setYtStatus((prev) => ({ ...prev, connected: false, configured: prev?.configured ?? true }))
+    setYtAuthError('')
+  }
+
+  const handleUpload = (file: RecordingFile) => {
+    const sessionId = `yt-${Date.now()}-${file.filename}`
+    setUploads((prev) => ({ ...prev, [sessionId]: { filename: file.filename, progress: 0, done: false } }))
+    api?.youtubeUpload?.({
+      sessionId,
+      filePath: file.path,
+      title: file.filename.replace(/\.[^.]+$/, ''),
+      privacyStatus: 'unlisted',
+    })
+  }
+
+  const handleCancelUpload = (sessionId: string) => {
+    api?.youtubeUploadCancel?.({ sessionId })
+    setUploads((prev) => {
+      const next = { ...prev }
+      delete next[sessionId]
+      return next
+    })
+  }
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  }
+
+  const formatDate = (ts: number) =>
+    new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+
+  const activeUploads = Object.entries(uploads)
+  const groupedUploadHistory = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; items: typeof uploadHistory }>()
+    for (const item of uploadHistory) {
+      const roomName = String(item.roomName || '').trim()
+      const roomId = String(item.roomId || '').trim()
+      const key = roomId || roomName || '__unknown__'
+      const label = roomName || (roomId ? `Room ${roomId}` : 'Unknown room')
+      const existing = map.get(key)
+      if (existing) {
+        existing.items.push(item)
+      } else {
+        map.set(key, { key, label, items: [item] })
+      }
+    }
+    return Array.from(map.values())
+      .map((group) => ({
+        ...group,
+        items: [...group.items].sort((a, b) => Number(b.uploadedAt || 0) - Number(a.uploadedAt || 0)),
+      }))
+      .sort((a, b) => Number(b.items[0]?.uploadedAt || 0) - Number(a.items[0]?.uploadedAt || 0))
+  }, [uploadHistory])
+
+  return (
+    <div className="recordings-view">
+      <div className="recordings-view__header">
+        <div>
+          <h2 className="recordings-view__title">Recordings</h2>
+          <p className="recordings-view__subtitle">{files.length} file{files.length !== 1 ? 's' : ''} recorded</p>
+          {recordingFolder && <p className="recordings-view__subtitle recordings-view__subtitle--path" title={recordingFolder}>{recordingFolder}</p>}
+        </div>
+        <div className="recordings-view__header-actions">
+          <button className="recordings-view__browse" onClick={handleChooseRecordingFolder} disabled={pickingFolder} title="Select recording folder" type="button">
+            {pickingFolder ? 'Opening…' : 'Browse'}
+          </button>
+          <button className="recordings-view__refresh" onClick={loadFiles} title="Refresh" type="button">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* YouTube section */}
+      <div className="recordings-view__yt-card">
+        <div className="recordings-view__yt-head">
+          <div className="recordings-view__yt-card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="#FF0000" aria-hidden="true">
+              <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+            </svg>
+            YouTube Upload
+          </div>
+          <label className="recordings-view__auto-upload-toggle">
+            <input
+              type="checkbox"
+              checked={autoUploadEnabled}
+              disabled={savingAutoUpload}
+              onChange={(e) => { void handleToggleAutoUpload(e.target.checked) }}
+            />
+            <span>Auto upload</span>
+          </label>
+        </div>
+
+        {ytStatus?.connected ? (
+          <div className="recordings-view__yt-connected">
+            {ytStatus.channelId ? (
+              <a
+                className="recordings-view__yt-channel"
+                href={`https://www.youtube.com/channel/${encodeURIComponent(ytStatus.channelId)}`}
+                target="_blank"
+                rel="noreferrer"
+                title="Open YouTube channel"
+              >
+                <svg width="13" height="13" viewBox="0 0 20 20" fill="#22c55e" aria-hidden="true"><circle cx="10" cy="10" r="10" /><path d="M6 10l3 3 5-5" stroke="#fff" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                {ytStatus.channelTitle || 'Connected'}
+              </a>
+            ) : (
+              <span className="recordings-view__yt-channel">
+                <svg width="13" height="13" viewBox="0 0 20 20" fill="#22c55e" aria-hidden="true"><circle cx="10" cy="10" r="10" /><path d="M6 10l3 3 5-5" stroke="#fff" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                {ytStatus.channelTitle || 'Connected'}
+              </span>
+            )}
+            <button className="recordings-view__yt-btn recordings-view__yt-btn--disconnect" onClick={handleYtRevoke} type="button">Disconnect</button>
+          </div>
+        ) : ytStatus?.configured === false ? (
+          /* Client ID not configured */
+          <div className="recordings-view__yt-disconnected">
+            {!showClientIdInput ? (
+              <>
+                <span className="recordings-view__yt-hint">
+                  YouTube OAuth chưa được cấu hình. Nhập Google OAuth Client ID (và Client Secret nếu cần) để bật upload.
+                </span>
+                <button className="recordings-view__yt-btn recordings-view__yt-btn--connect" onClick={() => setShowClientIdInput(true)} type="button">
+                  Nhập OAuth config
+                </button>
+              </>
+            ) : (
+              <div className="recordings-view__yt-clientid-form">
+                <input
+                  className="recordings-view__yt-clientid-input"
+                  type="text"
+                  placeholder="Dán Google OAuth Client ID vào đây..."
+                  value={clientIdInput}
+                  onChange={(e) => setClientIdInput(e.target.value)}
+                  autoFocus
+                />
+                <input
+                  className="recordings-view__yt-clientid-input"
+                  type="password"
+                  placeholder="Client Secret (nếu Google yêu cầu)..."
+                  value={clientSecretInput}
+                  onChange={(e) => setClientSecretInput(e.target.value)}
+                />
+                <div className="recordings-view__yt-clientid-actions">
+                  <button className="recordings-view__yt-btn recordings-view__yt-btn--connect" onClick={handleSaveClientId} disabled={savingClientId || !clientIdInput.trim()} type="button">
+                    {savingClientId ? 'Saving…' : 'Save'}
+                  </button>
+                  <button className="recordings-view__yt-btn recordings-view__yt-btn--disconnect" onClick={() => { setShowClientIdInput(false); setClientIdInput(''); setClientSecretInput('') }} type="button">
+                    Cancel
+                  </button>
+                </div>
+                <a className="recordings-view__yt-help" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">
+                  Tạo credentials tại Google Cloud Console →
+                </a>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* Configured but not connected */
+          <div className="recordings-view__yt-disconnected">
+            {ytAuthError ? (
+              <>
+                <div className="recordings-view__yt-error">{ytAuthError}</div>
+                {ytAuthError.includes('comply') || ytAuthError.includes('policy') || ytAuthError.includes('access_denied') ? (
+                  <div className="recordings-view__yt-setup-guide">
+                    <p className="recordings-view__yt-setup-title">⚠️ Cần cấu hình OAuth Consent Screen</p>
+                    <ol className="recordings-view__yt-setup-steps">
+                      <li>Vào <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noreferrer">OAuth consent screen</a></li>
+                      <li>Chọn <strong>External</strong> → Create</li>
+                      <li>Điền App name, email → Save</li>
+                      <li>Sang tab <strong>Test users</strong> → Add users</li>
+                      <li>Thêm email Google bạn muốn dùng → Save</li>
+                    </ol>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+            <div className="recordings-view__yt-actions">
+              <button className="recordings-view__yt-btn recordings-view__yt-btn--connect" onClick={handleYtAuth} disabled={ytAuthPending} type="button">
+                {ytAuthPending ? (
+                  <><span className="recordings-view__yt-spinner" /> Đang mở trình duyệt…</>
+                ) : ytAuthError ? 'Thử lại' : 'Connect YouTube'}
+              </button>
+              <button className="recordings-view__yt-btn recordings-view__yt-btn--disconnect" onClick={() => setShowClientIdInput((v) => !v)} type="button" title="Change Client ID">
+                <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
+              </button>
+            </div>
+            {showClientIdInput && (
+              <div className="recordings-view__yt-clientid-form">
+                <input
+                  className="recordings-view__yt-clientid-input"
+                  type="text"
+                  placeholder="Dán Google OAuth Client ID vào đây..."
+                  value={clientIdInput}
+                  onChange={(e) => setClientIdInput(e.target.value)}
+                  autoFocus
+                />
+                <input
+                  className="recordings-view__yt-clientid-input"
+                  type="password"
+                  placeholder="Client Secret (nếu Google yêu cầu)..."
+                  value={clientSecretInput}
+                  onChange={(e) => setClientSecretInput(e.target.value)}
+                />
+                <div className="recordings-view__yt-clientid-actions">
+                  <button className="recordings-view__yt-btn recordings-view__yt-btn--connect" onClick={handleSaveClientId} disabled={savingClientId || !clientIdInput.trim()} type="button">
+                    {savingClientId ? 'Saving…' : 'Save'}
+                  </button>
+                  <button className="recordings-view__yt-btn recordings-view__yt-btn--disconnect" onClick={() => { setShowClientIdInput(false); setClientIdInput(''); setClientSecretInput('') }} type="button">Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Active uploads */}
+      {activeUploads.length > 0 && (
+        <div className="recordings-view__uploads">
+          <div className="recordings-view__section-label">Uploading</div>
+          {activeUploads.map(([sid, u]) => (
+            <div key={sid} className="recordings-view__upload-row">
+              <div className="recordings-view__upload-info">
+                <span className="recordings-view__upload-name">{u.filename}</span>
+                {u.error ? (
+                  <span className="recordings-view__upload-status recordings-view__upload-status--error">Failed: {u.error}</span>
+                ) : u.done ? (
+                  <span className="recordings-view__upload-status recordings-view__upload-status--done">
+                    Uploaded
+                    {u.videoId && <a href={`https://youtube.com/watch?v=${u.videoId}`} target="_blank" rel="noreferrer"> — View</a>}
+                  </span>
+                ) : (
+                  <span className="recordings-view__upload-status">{Math.round(u.progress)}%</span>
+                )}
+              </div>
+              {!u.done && !u.error && (
+                <div className="recordings-view__upload-bar">
+                  <div className="recordings-view__upload-fill" style={{ width: `${u.progress}%` }} />
+                </div>
+              )}
+              {(u.done || u.error) && (
+                <button className="recordings-view__upload-dismiss" onClick={() => handleCancelUpload(sid)} type="button" title="Dismiss">×</button>
+              )}
+              {!u.done && !u.error && (
+                <button className="recordings-view__upload-dismiss" onClick={() => handleCancelUpload(sid)} type="button" title="Cancel">×</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {currentUploads.length > 0 && (
+        <div className="recordings-view__uploads">
+          <div className="recordings-view__section-label">Uploading now</div>
+          {currentUploads.map((u) => (
+            <div key={u.filePath} className="recordings-view__upload-row">
+              <div className="recordings-view__upload-info">
+                <span className="recordings-view__upload-name" title={u.filePath}>{u.filename}</span>
+                {u.status === 'error' ? (
+                  <span className="recordings-view__upload-status recordings-view__upload-status--error">Failed: {u.error || 'unknown'}</span>
+                ) : (
+                  <span className="recordings-view__upload-status">
+                    {Math.round(u.progress || 0)}% {u.source ? `· ${u.source}` : ''}
+                  </span>
+                )}
+              </div>
+              {u.status !== 'error' && (
+                <div className="recordings-view__upload-bar">
+                  <div className="recordings-view__upload-fill" style={{ width: `${u.progress || 0}%` }} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {uploadHistory.length > 0 && (
+        <div className="recordings-view__list">
+          <div className="recordings-view__section-label">Uploaded history</div>
+          {groupedUploadHistory.map((group) => (
+            <div key={group.key}>
+              <div className="recordings-view__section-label">{group.label} ({group.items.length})</div>
+              {group.items.slice(0, 20).map((h) => (
+                <div key={h.id} className="recordings-view__item">
+                  <div className="recordings-view__item-icon" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="#FF0000">
+                      <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                    </svg>
+                  </div>
+                  <div className="recordings-view__item-info">
+                    <span className="recordings-view__item-name" title={h.title || h.filename}>
+                      {(h.title && h.title.trim()) || h.filename.replace(/\.[^.]+$/, '')}
+                    </span>
+                    <span className="recordings-view__item-meta">
+                      Uploaded {new Date(h.uploadedAt).toLocaleString()}
+                      {h.source ? ` | ${h.source}` : ''}
+                      {h.backendSyncedAt
+                        ? ' | Sync: Synced'
+                        : h.roomId
+                          ? ` | Sync: Not synced${h.backendSyncError ? ' (retrying)' : ''}`
+                          : ' | Sync: Not synced (missing room)'}
+                    </span>
+                  </div>
+                  <div className="recordings-view__item-actions">
+                    {h.youtubeUrl ? (
+                      <a className="recordings-view__action" href={h.youtubeUrl} target="_blank" rel="noreferrer" title="Open video">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z" />
+                          <path d="M5 5h6v2H7v10h10v-4h2v6H5z" />
+                        </svg>
+                      </a>
+                    ) : (
+                      <button className="recordings-view__action" type="button" disabled title="Video link unavailable">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3z" />
+                          <path d="M5 5h6v2H7v10h10v-4h2v6H5z" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* File list */}
+      <div className="recordings-view__list">
+        {loading && <div className="recordings-view__empty">Loading…</div>}
+        {!loading && files.length === 0 && (
+          <div className="recordings-view__empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" opacity="0.3" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+            <span>No recordings yet. Start a recording in a conference room.</span>
+          </div>
+        )}
+        {files.map((file) => (
+          <div key={file.path} className="recordings-view__item">
+            <div className="recordings-view__item-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="20" height="18" rx="2" />
+                <circle cx="12" cy="12" r="3" />
+                <path d="M7 12H9M15 12H17" />
+              </svg>
+            </div>
+            <div className="recordings-view__item-info">
+              <span className="recordings-view__item-name" title={file.filename}>{file.filename}</span>
+              <span className="recordings-view__item-meta">{formatSize(file.size)} · {formatDate(file.createdAt)}</span>
+              {file.youtubeUrl && (
+                <a className="recordings-view__item-link" href={file.youtubeUrl} target="_blank" rel="noreferrer">
+                  YouTube link
+                </a>
+              )}
+            </div>
+            <div className="recordings-view__item-actions">
+              {ytStatus?.connected && (
+                <button className="recordings-view__action" onClick={() => handleUpload(file)} title="Upload to YouTube" type="button">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                  </svg>
+                </button>
+              )}
+              <button className="recordings-view__action" onClick={() => handleReveal(file)} title="Show in folder" type="button">
+                <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path d="M2 5a2 2 0 012-2h3.586A2 2 0 019 3.586l.707.707A2 2 0 0011.414 5H16a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V5z" />
+                </svg>
+              </button>
+              <button className="recordings-view__action recordings-view__action--danger" onClick={() => handleDelete(file)} title="Delete" type="button">
+                <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )

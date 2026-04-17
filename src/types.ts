@@ -70,5 +70,6 @@ export type AppPage =
   | { key: 'participants' }
   | { key: 'programs' }
   | { key: 'settings' }
+  | { key: 'recordings' }
   | { key: 'detail'; roomId: string }
   | { key: 'conference'; roomId: string; audience: boolean }

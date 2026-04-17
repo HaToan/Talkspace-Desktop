@@ -353,6 +353,13 @@ export const submitActionEvent = async (
   await apiClient.post(`/api/v1/rooms/${encodeURIComponent(roomId)}/action-events`, payload)
 }
 
+export const saveRoomRecord = async (
+  roomId: string,
+  payload: { title: string; url: string; date: string },
+) => {
+  await apiClient.post(`/api/v1/rooms/${encodeURIComponent(roomId)}/records`, payload)
+}
+
 export const updateProfileSettings = async (
   username: string,
   payload: {
