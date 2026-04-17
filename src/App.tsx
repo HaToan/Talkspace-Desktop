@@ -4263,6 +4263,15 @@ function RecordingsView() {
 
   const formatDate = (ts: number) =>
     new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const formatUploadHistoryTitle = (item: {
+    title?: string
+    filename: string
+    recordDate?: string
+    uploadedAt: number
+  }) => {
+    const rawTitle = (item.title && item.title.trim()) || item.filename.replace(/\.[^.]+$/, '')
+    return rawTitle.replace(/^\[[^\]]+\]\s*-\s*/u, '').trim() || rawTitle
+  }
 
   const activeUploads = Object.entries(uploads)
   const groupedUploadHistory = useMemo(() => {
@@ -4525,7 +4534,7 @@ function RecordingsView() {
                   </div>
                   <div className="recordings-view__item-info">
                     <span className="recordings-view__item-name" title={h.title || h.filename}>
-                      {(h.title && h.title.trim()) || h.filename.replace(/\.[^.]+$/, '')}
+                      {h.title}
                     </span>
                     <span className="recordings-view__item-meta">
                       Uploaded {new Date(h.uploadedAt).toLocaleString()}

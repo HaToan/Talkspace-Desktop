@@ -1628,11 +1628,30 @@ app.whenReady().then(() => {
     manifest.videos[videoKey] = { ...(manifest.videos[videoKey] || {}), ...patch }
     saveRecordManifest(mediaPath, manifest)
   }
+  const formatYoutubeTitle = ({ date, roomTitle, fallbackTitle }) => {
+    const baseTitle = String(roomTitle || '').trim() || String(fallbackTitle || '').trim()
+    if (!baseTitle) return ''
+    const d = new Date(String(date || '').trim())
+    if (!Number.isFinite(d.getTime())) return baseTitle
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    const dd = String(d.getDate()).padStart(2, '0')
+    const mon = months[d.getMonth()] || 'Jan'
+    const yyyy = String(d.getFullYear())
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    return `[${dd} ${mon} ${yyyy}: ${hh}:${mm}] - ${baseTitle}`
+  }
   const resolveUploadTitleFromRecordManifest = (mediaPath, fallbackTitle) => {
     try {
       const manifest = loadRecordManifest(mediaPath)
       const key = path.basename(mediaPath)
       const rec = manifest?.videos?.[key]
+      const formatted = formatYoutubeTitle({
+        date: rec?.date,
+        roomTitle: rec?.titleRoom,
+        fallbackTitle,
+      })
+      if (formatted) return formatted
       if (rec?.uploadTitle && String(rec.uploadTitle).trim()) return String(rec.uploadTitle).trim()
       if (rec?.titleRoom && String(rec.titleRoom).trim()) return String(rec.titleRoom).trim()
     } catch {}
