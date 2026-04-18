@@ -77,9 +77,26 @@ type PrejoinDeviceSettings = {
 }
 
 type LaunchConferencePayload = {
-  roomId: string
+  roomId?: string
+  roomName?: string
   joinAsAudience: boolean
   prejoinSettings?: PrejoinDeviceSettings
+}
+
+type DeepLinkPrejoinPayload = {
+  roomName: string
+  joinAsAudience: boolean
+  nonce: string
+}
+
+const isRoomClosedErrorMessage = (message: string | null | undefined) =>
+  typeof message === 'string' && message.toLowerCase().includes('room is closed')
+
+const getNoticeTone = (message: string): 'error' | 'info' => {
+  const text = String(message || '').toLowerCase()
+  if (!text) return 'info'
+  const errorHints = ['error', 'failed', 'forbidden', 'cannot', 'unable', 'not found', 'denied']
+  return errorHints.some((hint) => text.includes(hint)) ? 'error' : 'info'
 }
 
 const statusTone: Record<RoomStatus, { label: string; className: string }> = {
@@ -259,9 +276,59 @@ const parseStoredProfile = () => {
   }
 }
 
-function MainTitlebar() {
+function MainTitlebar({
+  updateState,
+  globalNotice,
+  onDownloadUpdate,
+  onQuitAndInstall,
+  onDismissUpdate,
+  onDismissGlobalNotice,
+}: {
+  updateState:
+    | { phase: 'idle' }
+    | { phase: 'available'; version: string }
+    | { phase: 'downloading'; percent: number }
+    | { phase: 'ready'; version: string }
+    | { phase: 'error'; message: string }
+  globalNotice: string
+  onDownloadUpdate: () => void
+  onQuitAndInstall: () => void
+  onDismissUpdate: () => void
+  onDismissGlobalNotice: () => void
+}) {
+  type TitlebarNotificationEvent = {
+    id: string
+    key: string
+    title: string
+    message: string
+    tone: 'info' | 'error'
+    createdAt: number
+  }
+
   const [isMaximized, setIsMaximized] = useState(false)
+  const [isUpdateMenuOpen, setIsUpdateMenuOpen] = useState(false)
+  const [notificationHistory, setNotificationHistory] = useState<TitlebarNotificationEvent[]>([])
+  const updateMenuRef = useRef<HTMLDivElement | null>(null)
+  const previousGlobalNoticeRef = useRef(globalNotice)
+  const previousUpdateEventKeyRef = useRef('')
   const api = (window as any).electronAPI
+
+  const pushNotificationHistory = useCallback(
+    (event: Omit<TitlebarNotificationEvent, 'id' | 'createdAt'>) => {
+      setNotificationHistory((prev) => {
+        const next: TitlebarNotificationEvent[] = [
+          {
+            ...event,
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            createdAt: Date.now(),
+          },
+          ...prev.filter((item) => item.key !== event.key),
+        ]
+        return next.slice(0, 10)
+      })
+    },
+    [],
+  )
 
   useEffect(() => {
     api?.isMaximizedCurrentWindow?.().then((res: any) => {
@@ -269,12 +336,101 @@ function MainTitlebar() {
     })
   }, [api])
 
+  useEffect(() => {
+    if (!isUpdateMenuOpen) return
+    const onPointerDown = (event: MouseEvent) => {
+      if (!updateMenuRef.current) return
+      const target = event.target as Node | null
+      if (target && !updateMenuRef.current.contains(target)) {
+        setIsUpdateMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [isUpdateMenuOpen])
+
+  useEffect(() => {
+    const currentUpdateEventKey =
+      updateState.phase === 'available'
+        ? `available:${updateState.version}`
+        : updateState.phase === 'ready'
+          ? `ready:${updateState.version}`
+          : updateState.phase === 'error'
+            ? `error:${updateState.message}`
+            : updateState.phase
+
+    const hasNewGlobalNotice =
+      Boolean(globalNotice) && globalNotice !== previousGlobalNoticeRef.current
+    const hasNewImportantUpdateEvent =
+      currentUpdateEventKey !== previousUpdateEventKeyRef.current &&
+      (updateState.phase === 'available' ||
+        updateState.phase === 'ready' ||
+        updateState.phase === 'error')
+
+    if (hasNewGlobalNotice) {
+      pushNotificationHistory({
+        key: `notice:${globalNotice}`,
+        title: 'Notification',
+        message: globalNotice,
+        tone: getNoticeTone(globalNotice),
+      })
+    }
+
+    if (hasNewImportantUpdateEvent) {
+      if (updateState.phase === 'available') {
+        pushNotificationHistory({
+          key: currentUpdateEventKey,
+          title: `New version v${updateState.version}`,
+          message: 'Ready to download.',
+          tone: 'info',
+        })
+      } else if (updateState.phase === 'ready') {
+        pushNotificationHistory({
+          key: currentUpdateEventKey,
+          title: `Ready to install v${updateState.version}`,
+          message: 'Restart app to finish update.',
+          tone: 'info',
+        })
+      } else if (updateState.phase === 'error') {
+        pushNotificationHistory({
+          key: currentUpdateEventKey,
+          title: 'Update failed',
+          message: updateState.message,
+          tone: 'error',
+        })
+      }
+    }
+
+    if (hasNewGlobalNotice || hasNewImportantUpdateEvent) {
+      setIsUpdateMenuOpen(true)
+    }
+
+    previousGlobalNoticeRef.current = globalNotice
+    previousUpdateEventKeyRef.current = currentUpdateEventKey
+  }, [globalNotice, pushNotificationHistory, updateState])
+
   const handleMinimize = () => api?.minimizeCurrentWindow?.()
   const handleMaximize = async () => {
     const res = await api?.maximizeCurrentWindow?.()
     if (res) setIsMaximized(res.isMaximized)
   }
   const handleClose = () => api?.closeCurrentWindow?.()
+  const hasUpdateStatus = updateState.phase !== 'idle'
+  const hasNotification =
+    hasUpdateStatus || Boolean(globalNotice) || notificationHistory.length > 0
+  const globalNoticeTone = getNoticeTone(globalNotice)
+  const hasErrorNotification =
+    globalNoticeTone === 'error' || updateState.phase === 'error'
+  const updateLabel =
+    updateState.phase === 'available'
+      ? `v${updateState.version}`
+      : updateState.phase === 'ready'
+        ? `v${updateState.version}`
+        : updateState.phase === 'downloading'
+          ? `${updateState.percent}%`
+          : updateState.phase === 'error'
+            ? 'Error'
+            : ''
 
   return (
     <div className="main-titlebar" aria-label="Window title bar">
@@ -286,6 +442,133 @@ function MainTitlebar() {
         </span>
       </div>
       <div className="main-titlebar__spacer main-titlebar__drag" />
+      <div className="main-titlebar__status" ref={updateMenuRef}>
+        <button
+          type="button"
+          className={`main-titlebar__update-btn${hasNotification ? ' is-active' : ''}${
+            hasErrorNotification ? ' is-error' : ''
+          }`}
+          aria-label="Update status"
+          title="Update status"
+          onClick={() => setIsUpdateMenuOpen((prev) => !prev)}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M8 2.2a3.8 3.8 0 0 0-3.8 3.8v1.9c0 .78-.22 1.54-.64 2.2L2.6 11.5h10.8l-.96-1.4a3.98 3.98 0 0 1-.64-2.2V6A3.8 3.8 0 0 0 8 2.2Z"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+            <path
+              d="M6.6 12.3a1.4 1.4 0 0 0 2.8 0"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
+          </svg>
+          {hasNotification && (
+            <span
+              className={`main-titlebar__update-badge${
+                hasErrorNotification ? ' main-titlebar__update-badge--error' : ''
+              }`}
+            />
+          )}
+        </button>
+        {isUpdateMenuOpen && (
+          <div className="main-titlebar__update-menu" role="dialog" aria-label="Update panel">
+            {globalNotice && (
+              <>
+                <div
+                  className={`main-titlebar__update-row ${
+                    globalNoticeTone === 'error'
+                      ? 'main-titlebar__update-row--error'
+                      : 'main-titlebar__update-row--info'
+                  }`}
+                >
+                  <strong>Notification</strong>
+                  <span>{globalNotice}</span>
+                </div>
+                <div className="main-titlebar__update-actions">
+                  <button type="button" className="is-ghost" onClick={onDismissGlobalNotice}>Dismiss</button>
+                </div>
+              </>
+            )}
+            {updateState.phase === 'idle' && !globalNotice && (
+              <div className="main-titlebar__update-row">
+                <strong>Notifications</strong>
+                <span>No new notifications.</span>
+              </div>
+            )}
+            {updateState.phase === 'available' && (
+              <>
+                <div className="main-titlebar__update-row">
+                  <strong>New version {updateLabel}</strong>
+                  <span>Ready to download.</span>
+                </div>
+                <div className="main-titlebar__update-actions">
+                  <button type="button" onClick={onDownloadUpdate}>Download</button>
+                  <button type="button" className="is-ghost" onClick={onDismissUpdate}>Dismiss</button>
+                </div>
+              </>
+            )}
+            {updateState.phase === 'downloading' && (
+              <>
+                <div className="main-titlebar__update-row">
+                  <strong>Downloading {updateLabel}</strong>
+                  <span>Please wait until complete.</span>
+                </div>
+                <div className="main-titlebar__update-progress">
+                  <div style={{ width: `${updateState.percent}%` }} />
+                </div>
+              </>
+            )}
+            {updateState.phase === 'ready' && (
+              <>
+                <div className="main-titlebar__update-row">
+                  <strong>Ready to install {updateLabel}</strong>
+                  <span>Restart app to finish update.</span>
+                </div>
+                <div className="main-titlebar__update-actions">
+                  <button type="button" onClick={onQuitAndInstall}>Restart & install</button>
+                </div>
+              </>
+            )}
+            {updateState.phase === 'error' && (
+              <>
+                <div className="main-titlebar__update-row main-titlebar__update-row--error">
+                  <strong>Update failed</strong>
+                  <span>{updateState.message}</span>
+                </div>
+                <div className="main-titlebar__update-actions">
+                  <button type="button" className="is-ghost" onClick={onDismissUpdate}>Close</button>
+                </div>
+              </>
+            )}
+            {notificationHistory.length > 0 && (
+              <div className="main-titlebar__history">
+                <div className="main-titlebar__history-title">Recent notifications (max 10)</div>
+                <div className="main-titlebar__history-list">
+                  {notificationHistory.map((event) => (
+                    <div
+                      key={event.id}
+                      className={`main-titlebar__history-item ${
+                        event.tone === 'error'
+                          ? 'main-titlebar__history-item--error'
+                          : 'main-titlebar__history-item--info'
+                      }`}
+                    >
+                      <strong>{event.title}</strong>
+                      <span>{event.message}</span>
+                      <time>{new Date(event.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</time>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
       <div className="main-titlebar__winctrl" aria-label="Window controls">
         <button
           className="main-winbtn main-winbtn--minimize"
@@ -386,6 +669,9 @@ function App() {
     () => parseLaunchConferenceFromUrl(),
   )
   const launchConferenceStartedRef = useRef(false)
+  const [pendingDeepLinkPrejoin, setPendingDeepLinkPrejoin] = useState<DeepLinkPrejoinPayload | null>(null)
+  const handledDeepLinkPrejoinNoncesRef = useRef<Set<string>>(new Set())
+  const processingDeepLinkPrejoinNonceRef = useRef<string | null>(null)
 
   const derivedCategories = useMemo(() => {
     const map = new Map<string, RoomCategoryOption>()
@@ -430,6 +716,49 @@ function App() {
       ),
     ]
     return () => { unsubs.forEach((fn) => fn?.()) }
+  }, [])
+
+  useEffect(() => {
+    const api = window.electronAPI
+    if (!api) return
+    let active = true
+
+    const normalizePayload = (raw: any): DeepLinkPrejoinPayload | null => {
+      const roomName = String(raw?.roomName || '').trim()
+      const nonce = String(raw?.nonce || '').trim()
+      if (!roomName || !nonce) return null
+      return {
+        roomName,
+        nonce,
+        joinAsAudience: Boolean(raw?.joinAsAudience),
+      }
+    }
+
+    const acceptPayload = (raw: any) => {
+      const payload = normalizePayload(raw)
+      if (!payload) return
+      setPendingDeepLinkPrejoin(payload)
+    }
+
+    const unsubscribe = api.onDeepLinkPrejoin?.((payload) => {
+      if (!active) return
+      acceptPayload(payload)
+    })
+
+    void (async () => {
+      try {
+        const pending = await api.consumePendingPrejoinDeepLink?.()
+        if (!active || !pending) return
+        acceptPayload(pending)
+      } catch {
+        // Ignore consume errors for deep-link payload.
+      }
+    })()
+
+    return () => {
+      active = false
+      unsubscribe?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -1153,6 +1482,71 @@ function App() {
     })
   }
 
+  useEffect(() => {
+    const payload = pendingDeepLinkPrejoin
+    if (!payload) return
+    if (!authProfile) return
+
+    if (handledDeepLinkPrejoinNoncesRef.current.has(payload.nonce)) {
+      setPendingDeepLinkPrejoin(null)
+      return
+    }
+    if (processingDeepLinkPrejoinNonceRef.current === payload.nonce) {
+      return
+    }
+
+    const targetRoomName = payload.roomName.trim().toLowerCase()
+    const targetRoom = rooms.find(
+      (room) => String(room.roomName || '').trim().toLowerCase() === targetRoomName,
+    )
+
+    if (!targetRoom) {
+      if (roomsLoading || (!roomsError && rooms.length === 0)) {
+        return
+      }
+      handledDeepLinkPrejoinNoncesRef.current.add(payload.nonce)
+      setPendingDeepLinkPrejoin(null)
+      setGlobalNotice(`Room not found: ${payload.roomName}`)
+      return
+    }
+
+    processingDeepLinkPrejoinNonceRef.current = payload.nonce
+    void (async () => {
+      let result = await runJoinWithPrejoin(
+        targetRoom.id,
+        { joinAsAudience: payload.joinAsAudience },
+        prejoinSettingsByRoom[targetRoom.id],
+      )
+
+      if (isRoomClosedErrorMessage(result)) {
+        try {
+          const reopenedRoom = await openRoomApi(targetRoom.id)
+          setRooms((prev) => prev.map((room) => (room.id === targetRoom.id ? reopenedRoom : room)))
+          setMyRooms((prev) => prev.map((room) => (room.id === targetRoom.id ? reopenedRoom : room)))
+          result = await runJoinWithPrejoin(
+            targetRoom.id,
+            { joinAsAudience: payload.joinAsAudience },
+            prejoinSettingsByRoom[targetRoom.id],
+          )
+        } catch (error: any) {
+          const openErrorMessage = getTalkspacesApiError(error)
+          result = openErrorMessage
+            ? `Cannot open room: ${openErrorMessage}`
+            : 'Cannot open room. Only room host or co-host can open room.'
+        }
+      }
+
+      handledDeepLinkPrejoinNoncesRef.current.add(payload.nonce)
+      if (processingDeepLinkPrejoinNonceRef.current === payload.nonce) {
+        processingDeepLinkPrejoinNonceRef.current = null
+      }
+      setPendingDeepLinkPrejoin(null)
+      if (result) {
+        setGlobalNotice(result)
+      }
+    })()
+  }, [authProfile, pendingDeepLinkPrejoin, prejoinSettingsByRoom, rooms, roomsError, roomsLoading])
+
   const openRoomWindow = async (roomId: string) => {
     const result = await runJoinWithPrejoin(
       roomId,
@@ -1169,7 +1563,13 @@ function App() {
     if (!authProfile) return
     if (launchConferenceStartedRef.current) return
 
-    const targetRoom = rooms.find((item) => item.id === launchConferencePayload.roomId)
+    const launchRoomId = String(launchConferencePayload.roomId || '').trim()
+    const launchRoomName = String(launchConferencePayload.roomName || '').trim().toLowerCase()
+    const targetRoom = rooms.find((item) => {
+      if (launchRoomId && item.id === launchRoomId) return true
+      if (launchRoomName && String(item.roomName || '').trim().toLowerCase() === launchRoomName) return true
+      return false
+    })
     if (!targetRoom) {
       if (roomsLoading || (!roomsError && rooms.length === 0)) {
         return
@@ -1731,7 +2131,22 @@ function App() {
 
   return (
     <div className="main-window-root">
-      <MainTitlebar />
+      <MainTitlebar
+        updateState={updateState}
+        globalNotice={globalNotice}
+        onDownloadUpdate={() => {
+          void window.electronAPI?.downloadUpdate?.()
+        }}
+        onQuitAndInstall={() => {
+          void window.electronAPI?.quitAndInstall?.()
+        }}
+        onDismissUpdate={() => {
+          setUpdateState({ phase: 'idle' })
+        }}
+        onDismissGlobalNotice={() => {
+          setGlobalNotice('')
+        }}
+      />
       <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
@@ -1741,38 +2156,6 @@ function App() {
             {runtimeVersion && <div className="brand-subtitle">{runtimeVersion}</div>}
           </div>
         </div>
-        {updateState.phase !== 'idle' && (
-          <div className={`update-banner${updateState.phase === 'ready' ? ' update-banner--ready' : updateState.phase === 'error' ? ' update-banner--error' : ''}`}>
-            {updateState.phase === 'available' && (
-              <>
-                <div className="update-banner__text">Có phiên bản mới <strong>v{updateState.version}</strong></div>
-                <div className="update-banner__actions">
-                  <button className="update-banner__btn" onClick={() => window.electronAPI?.downloadUpdate?.()}>Cập nhật</button>
-                  <button className="update-banner__btn update-banner__btn--dismiss" onClick={() => setUpdateState({ phase: 'idle' })}>Bỏ qua</button>
-                </div>
-              </>
-            )}
-            {updateState.phase === 'downloading' && (
-              <>
-                <div className="update-banner__text">Đang tải... {updateState.percent}%</div>
-                <div className="update-banner__progress">
-                  <div className="update-banner__progress-fill" style={{ width: `${updateState.percent}%` }} />
-                </div>
-              </>
-            )}
-            {updateState.phase === 'ready' && (
-              <>
-                <div className="update-banner__text">Sẵn sàng cài đặt <strong>v{updateState.version}</strong></div>
-                <div className="update-banner__actions">
-                  <button className="update-banner__btn" onClick={() => window.electronAPI?.quitAndInstall?.()}>Khởi động lại</button>
-                </div>
-              </>
-            )}
-            {updateState.phase === 'error' && (
-              <div className="update-banner__text">Lỗi cập nhật: {updateState.message}</div>
-            )}
-          </div>
-        )}
         <nav className="menu">
           {[
             { key: 'rooms', label: 'Rooms' },
@@ -1823,6 +2206,14 @@ function App() {
       </aside>
 
       <main className="main-content">
+        {roomsError && (
+          <div className="main-header">
+            <div>
+              <h1>{pageLabel}</h1>
+            </div>
+            {roomsError && <div className="error">{roomsError}</div>}
+          </div>
+        )}
         {/* <header className="main-header">
           <div>
             <h1>{pageLabel}</h1>
@@ -1868,13 +2259,15 @@ const parseLaunchConferenceFromUrl = (): LaunchConferencePayload | null => {
   if (params.get('launchMode') !== 'conference') return null
 
   const roomId = params.get('roomId')?.trim()
-  if (!roomId) return null
+  const roomName = params.get('roomName')?.trim()
+  if (!roomId && !roomName) return null
 
   const joinAsAudience = params.get('audience') === '1'
   const rawPrejoin = params.get('prejoin')
   if (!rawPrejoin) {
     return {
       roomId,
+      roomName,
       joinAsAudience,
     }
   }
@@ -1916,12 +2309,14 @@ const parseLaunchConferenceFromUrl = (): LaunchConferencePayload | null => {
     }
     return {
       roomId,
+      roomName,
       joinAsAudience,
       prejoinSettings,
     }
   } catch {
     return {
       roomId,
+      roomName,
       joinAsAudience,
     }
   }
@@ -1932,6 +2327,7 @@ const clearLaunchConferenceFromUrl = () => {
   const url = new URL(window.location.href)
   url.searchParams.delete('launchMode')
   url.searchParams.delete('roomId')
+  url.searchParams.delete('roomName')
   url.searchParams.delete('audience')
   url.searchParams.delete('prejoin')
   const nextUrl = `${url.pathname}${url.search}${url.hash}`
