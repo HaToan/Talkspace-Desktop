@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, shell, desktopCapturer, dialog, webContents, screen, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, desktopCapturer, dialog, webContents, screen, clipboard, Notification } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { execFile } = require('child_process')
 const slugify = require('slugify')
+const APP_ROOT_DIR = path.join(__dirname, '..')
 
 // Resolve ffmpeg binary — works in dev and in packaged (asar.unpacked) builds
 const resolveFfmpegPath = () => {
@@ -45,14 +46,18 @@ const loadDotenvFile = (filePath) => {
   }
 }
 
-loadDotenvFile(path.join(process.cwd(), '.env.local'))
-loadDotenvFile(path.join(process.cwd(), '.env'))
+loadDotenvFile(path.join(APP_ROOT_DIR, '.env.local'))
+loadDotenvFile(path.join(APP_ROOT_DIR, '.env.production'))
 
-const DESKTOP_AUTH_PROTOCOL = 'talkspace-desktop'
+const isDev = Boolean(process.env.VITE_DEV_SERVER_URL) || Boolean(process.defaultApp)
+const DESKTOP_AUTH_PROTOCOL =
+  String(process.env.DESKTOP_AUTH_PROTOCOL || '').trim() ||
+  (isDev ? 'talkspace-desktop-dev' : 'talkspace-desktop')
 const DESKTOP_AUTH_HOST = 'oauth-callback'
+const DESKTOP_PREJOIN_HOST = 'prejoin'
 const EXTERNAL_OAUTH_TIMEOUT_MS = 3 * 60 * 1000
+const WINDOWS_APP_USER_MODEL_ID = 'com.vxspace.talkspace-desktop'
 
-const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
 const allowInsecureCertFlag = process.env.ELECTRON_ALLOW_INSECURE_CERT
 const allowInsecureCert =
   allowInsecureCertFlag === '1' || (isDev && allowInsecureCertFlag !== '0')
@@ -63,6 +68,16 @@ const selectSourceWindowIcon = fs.existsSync(selectSourceWindowIconPath)
 
 if (allowInsecureCert) {
   app.commandLine.appendSwitch('ignore-certificate-errors')
+}
+
+if (isDev) {
+  const devUserDataDir = path.join(os.tmpdir(), 'talkspace-desktop-dev')
+  app.setPath('userData', devUserDataDir)
+  try {
+    app.setPath('sessionData', path.join(devUserDataDir, 'session'))
+  } catch {
+    // Ignore when sessionData path is not available in current Electron build.
+  }
 }
 
 const normalizeBaseUrl = (value) => {
@@ -82,15 +97,18 @@ const toSafeFileName = (value, fallback = 'talkspace-meeting-recording') => {
 
 const isHttpUrl = (value) => /^https?:\/\//i.test(value)
 
-const gotSingleInstanceLock = app.requestSingleInstanceLock()
-if (!gotSingleInstanceLock) {
+const shouldUseSingleInstanceLock = true
+const gotSingleInstanceLock = shouldUseSingleInstanceLock ? app.requestSingleInstanceLock() : true
+if (shouldUseSingleInstanceLock && !gotSingleInstanceLock) {
   app.quit()
+  process.exit(0)
 }
 
 let mainWindow = null
 const conferenceWindows = new Set()
 let pendingExternalOauth = null
 let bufferedHandoffToken = null
+let bufferedPrejoinDeepLink = null
 const conferenceShareModeState = new Map()
 const miniModeRestoreState = new Map()
 const DEFAULT_CONFERENCE_MIN_SIZE = [250, 250]
@@ -303,26 +321,64 @@ const extractHandoffTokenFromDeepLink = (rawUrl) => {
   }
 }
 
+const extractPrejoinPayloadFromDeepLink = (rawUrl) => {
+  if (!rawUrl || typeof rawUrl !== 'string') return null
+  try {
+    const parsed = new URL(rawUrl)
+    if (parsed.protocol !== `${DESKTOP_AUTH_PROTOCOL}:`) return null
+    if (parsed.hostname !== DESKTOP_PREJOIN_HOST) return null
+    const roomName = String(parsed.searchParams.get('roomName') || '').trim()
+    if (!roomName) return null
+    const audienceRaw = String(parsed.searchParams.get('audience') || '').trim().toLowerCase()
+    const joinAsAudience = audienceRaw === '1' || audienceRaw === 'true'
+    return {
+      roomName,
+      joinAsAudience,
+    }
+  } catch {
+    return null
+  }
+}
+
 const handleDesktopDeepLink = (rawUrl) => {
   const token = extractHandoffTokenFromDeepLink(rawUrl)
-  if (!token) return false
-
-  if (pendingExternalOauth) {
-    resolvePendingExternalOauth({
-      success: true,
-      handoffToken: token,
-    })
-  } else {
-    bufferedHandoffToken = token
-  }
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore()
+  if (token) {
+    if (pendingExternalOauth) {
+      resolvePendingExternalOauth({
+        success: true,
+        handoffToken: token,
+      })
+    } else {
+      bufferedHandoffToken = token
     }
-    mainWindow.focus()
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore()
+      }
+      mainWindow.focus()
+    }
+    return true
   }
-  return true
+
+  const prejoinPayload = extractPrejoinPayloadFromDeepLink(rawUrl)
+  if (prejoinPayload) {
+    const payload = {
+      roomName: prejoinPayload.roomName,
+      joinAsAudience: prejoinPayload.joinAsAudience,
+      nonce: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    }
+    bufferedPrejoinDeepLink = payload
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore()
+      }
+      mainWindow.focus()
+      mainWindow.webContents.send('deep-link:prejoin', payload)
+    }
+    return true
+  }
+
+  return false
 }
 
 const registerDesktopProtocolClient = () => {
@@ -468,10 +524,11 @@ const loadRendererEntry = (win, query = {}) => {
 
 const openConferenceWindow = async (parentWindow, payload = {}) => {
   const roomId = String(payload?.roomId || '').trim()
-  if (!roomId) {
+  const roomName = String(payload?.roomName || '').trim()
+  if (!roomId && !roomName) {
     return {
       success: false,
-      error: 'Room id is required.',
+      error: 'Room id or room name is required.',
     }
   }
 
@@ -480,6 +537,7 @@ const openConferenceWindow = async (parentWindow, payload = {}) => {
   const query = {
     launchMode: 'conference',
     roomId,
+    roomName,
     audience: payload?.joinAsAudience ? '1' : '0',
     prejoin: payload?.prejoinSettings ? JSON.stringify(payload.prejoinSettings) : '',
   }
@@ -834,14 +892,50 @@ const setupAutoUpdater = (win) => {
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
 
+  const notifyUpdateAvailable = (info) => {
+    if (!Notification || !Notification.isSupported()) return
+    const version = String(info?.version || '').trim() || 'new'
+    const notification = new Notification({
+      title: 'TalkSpace',
+      body: `A new version v${version} is available. The app will download it automatically.`,
+      silent: false,
+    })
+    notification.on('click', () => {
+      if (win && !win.isDestroyed()) {
+        if (win.isMinimized()) win.restore()
+        win.focus()
+      }
+    })
+    notification.show()
+  }
+
+  const notifyUpdateReady = (info) => {
+    if (!Notification || !Notification.isSupported()) return
+    const version = String(info?.version || app.getVersion())
+    const notification = new Notification({
+      title: 'TalkSpace',
+      body: `Update v${version} has been downloaded. Close and reopen the app to finish installation.`,
+      silent: false,
+    })
+    notification.on('click', () => {
+      if (win && !win.isDestroyed()) {
+        if (win.isMinimized()) win.restore()
+        win.focus()
+      }
+    })
+    notification.show()
+  }
+
   autoUpdater.on('update-available', (info) => {
     if (!win.isDestroyed()) win.webContents.send('updater:update-available', info)
+    notifyUpdateAvailable(info)
   })
   autoUpdater.on('download-progress', (progress) => {
     if (!win.isDestroyed()) win.webContents.send('updater:download-progress', progress)
   })
   autoUpdater.on('update-downloaded', (info) => {
     if (!win.isDestroyed()) win.webContents.send('updater:update-downloaded', info)
+    notifyUpdateReady(info)
   })
   autoUpdater.on('update-not-available', () => {
     if (!win.isDestroyed()) win.webContents.send('updater:update-not-available')
@@ -988,6 +1082,10 @@ const runGoogleExternalOauthFlow = async (apiBaseUrl) => {
     })
   }
 
+  if (isDev) {
+    console.log('[oauth-external] authUrl:', authUrl)
+  }
+
   try {
     await shell.openExternal(authUrl)
   } catch (error) {
@@ -1013,7 +1111,7 @@ const runGoogleExternalOauthFlow = async (apiBaseUrl) => {
   })
 }
 
-if (gotSingleInstanceLock) {
+if (shouldUseSingleInstanceLock && gotSingleInstanceLock) {
   app.on('second-instance', (_event, commandLine) => {
     const deepLinkArg = commandLine.find(
       (arg) => typeof arg === 'string' && arg.startsWith(`${DESKTOP_AUTH_PROTOCOL}://`),
@@ -1037,6 +1135,10 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  if (process.platform === 'win32') {
+    app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID)
+  }
+
   if (allowInsecureCert) {
     app.on('certificate-error', (event, _webContents, _url, _error, _certificate, callback) => {
       event.preventDefault()
@@ -1246,6 +1348,11 @@ app.whenReady().then(() => {
   ipcMain.handle('prejoin:open', async (_event, payload) => {
     const activeWindow = BrowserWindow.getFocusedWindow() || mainWindow
     return await openPrejoinWindow(activeWindow, payload)
+  })
+  ipcMain.handle('deep-link:consume-prejoin', async () => {
+    const payload = bufferedPrejoinDeepLink
+    bufferedPrejoinDeepLink = null
+    return payload
   })
 
   ipcMain.handle('conference:open-room', async (_event, payload) => {

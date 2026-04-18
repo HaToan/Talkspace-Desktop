@@ -1,5 +1,8 @@
 node_modules/
 dist/
+release/
+.continue/
+.deploy-softwarex-manifest.json
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts

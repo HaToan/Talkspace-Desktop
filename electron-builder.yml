@@ -1,5 +1,9 @@
 appId: com.vxspace.talkspace-desktop
 productName: TalkSpace
+protocols:
+  - name: TalkSpace Desktop
+    schemes:
+      - talkspace-desktop
 directories:
   output: release
 
@@ -14,8 +18,8 @@ asarUnpack:
 win:
   target:
     - target: nsis
-      arch: [x64]
-  artifactName: TalkSpace-Setup-${version}.exe
+      arch: [x64, ia32]
+  artifactName: TalkSpace-Setup-${version}-${arch}.exe
 
 mac:
   target:
@@ -38,15 +42,6 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
 
-# Uncomment and configure one of the following publish providers before releasing:
-#
-# GitHub Releases:
-# publish:
-#   provider: github
-#   owner: your-org
-#   repo: talkspace-desktop
-#
-# Custom / S3-compatible server:
-# publish:
-#   provider: generic
-#   url: https://your-server/releases/
+publish:
+  provider: generic
+  url: https://v-xs.com/software.x/talkspace/

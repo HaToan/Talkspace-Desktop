@@ -127,6 +127,16 @@ declare global {
           audienceEnabled?: boolean
         }
       }>
+      consumePendingPrejoinDeepLink?: () => Promise<{
+        roomName: string
+        joinAsAudience: boolean
+        nonce: string
+      } | null>
+      onDeepLinkPrejoin?: (cb: (payload: {
+        roomName: string
+        joinAsAudience: boolean
+        nonce: string
+      }) => void) => () => void
       openConferenceWindow: (payload: {
         roomId: string
         roomTitle: string

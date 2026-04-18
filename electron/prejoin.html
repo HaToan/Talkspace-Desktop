@@ -1075,7 +1075,7 @@
         joinAsAudience = Boolean(payload.joinAsAudience)
         const payloadAllowedRoles = Array.isArray(payload.allowedJoinRoles)
           ? payload.allowedJoinRoles.filter((role) =>
-              role === 'member' || role === 'listener',
+              role === 'member' || role === 'listener' || role === 'host' || role === 'co_host',
             )
           : []
         allowedJoinRoles = payloadAllowedRoles.length > 0

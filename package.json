@@ -1,6 +1,6 @@
 {
   "name": "talkspace-desktop",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "private": true,
   "description": "Electron desktop app for TalkSpace features",
   "main": "electron/main.cjs",
@@ -11,9 +11,14 @@
     "electron": "electron .",
     "typecheck": "tsc --noEmit",
     "pack:win": "npm run build && electron-builder --win",
+    "pack:win:x64": "npm run build && electron-builder --win --x64",
+    "pack:win:x32": "npm run build && electron-builder --win --ia32",
     "pack:mac": "npm run build && electron-builder --mac",
     "pack:linux": "npm run build && electron-builder --linux",
-    "pack": "npm run build && electron-builder"
+    "pack:linux:deploy": "npm run pack:linux && npm run deploy:softwarex",
+    "pack": "npm run build && electron-builder",
+    "serve:updates:local": "npx http-server release -p 5500 -c-1",
+    "deploy:softwarex": "powershell -ExecutionPolicy Bypass -File scripts/deploy-softwarex.ps1"
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.20",

@@ -59,49 +59,33 @@ export default function AuthScreen({
       return
     }
 
-    if (!window.electronAPI?.startGoogleOAuth) {
+    if (!window.electronAPI?.startGoogleOAuthExternal) {
       setError('Google OAuth is available only in desktop Electron runtime.')
       return
     }
 
     setLoading(true)
     try {
-      if (window.electronAPI.startGoogleOAuthExternal) {
-        const externalResult = await window.electronAPI.startGoogleOAuthExternal({
-          apiBaseUrl,
-        })
-        if (!externalResult.success) {
-          if (externalResult.cancelled) {
-            setMessage('Google login cancelled.')
-            return
-          }
-          throw new Error(externalResult.error || 'Google OAuth failed.')
+      const externalResult = await window.electronAPI.startGoogleOAuthExternal({
+        apiBaseUrl,
+      })
+      if (!externalResult.success) {
+        if (externalResult.cancelled) {
+          setMessage('Google login cancelled.')
+          return
         }
-
-        if (externalResult.handoffToken) {
-          await exchangeDesktopHandoffToken(externalResult.handoffToken)
-        }
-      } else {
-        const popupResult = await window.electronAPI.startGoogleOAuth({
-          apiBaseUrl,
-        })
-        if (!popupResult.success) {
-          if (popupResult.cancelled) {
-            setMessage('Google login cancelled.')
-            return
-          }
-          throw new Error(popupResult.error || 'Google OAuth failed.')
-        }
+        throw new Error(externalResult.error || 'Google OAuth failed.')
       }
+
+      if (!externalResult.handoffToken) {
+        throw new Error('Google OAuth did not return handoff token.')
+      }
+      await exchangeDesktopHandoffToken(externalResult.handoffToken)
 
       const profile = await fetchCurrentProfile()
       onAuthenticated(profile)
     } catch (err: any) {
       const rawMessage = String(err?.message ?? '')
-      if (rawMessage.includes("No handler registered for 'auth:google-oauth'")) {
-        setError('Desktop app needs restart to load Google OAuth bridge. Please close Electron and run `npm run dev` again.')
-        return
-      }
       if (rawMessage.includes("No handler registered for 'auth:google-oauth-external'")) {
         setError('Desktop app needs restart to load Google OAuth bridge. Please close Electron and run `npm run dev` again.')
         return

@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getScreenSourceForAudio: () => ipcRenderer.invoke('media:get-screen-source-for-audio'),
   resizeSourceWindow: (payload) => ipcRenderer.invoke('media:resize-source-window', payload),
   openPrejoinWindow: (payload) => ipcRenderer.invoke('prejoin:open', payload),
+  consumePendingPrejoinDeepLink: () => ipcRenderer.invoke('deep-link:consume-prejoin'),
+  onDeepLinkPrejoin: (cb) => {
+    const fn = (_e, payload) => cb(payload)
+    ipcRenderer.on('deep-link:prejoin', fn)
+    return () => ipcRenderer.removeListener('deep-link:prejoin', fn)
+  },
   openConferenceWindow: (payload) => ipcRenderer.invoke('conference:open-room', payload),
   closeCurrentWindow: () => ipcRenderer.invoke('window:close-current'),
   minimizeCurrentWindow: () => ipcRenderer.invoke('window:minimize-current'),
