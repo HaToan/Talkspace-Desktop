@@ -428,8 +428,8 @@ const listDesktopSources = async () => {
   const sources = await desktopCapturer.getSources({
     types: ['screen', 'window'],
     thumbnailSize: {
-      width: 960,
-      height: 540,
+      width: 320,
+      height: 180,
     },
     fetchWindowIcons: false,
   })
@@ -830,13 +830,16 @@ const openDesktopSourcePickerWindow = async (parentWindow) => {
       resolve(result)
     }
 
+    let cachedSources = null
+
     const sendSources = async () => {
       try {
-        const sources = await listDesktopSources()
+        cachedSources = await listDesktopSources()
         if (!pickerWindow.isDestroyed()) {
-          pickerWindow.webContents.send('screen-picker:sources', { requestId, sources })
+          pickerWindow.webContents.send('screen-picker:sources', { requestId, sources: cachedSources })
         }
       } catch (_error) {
+        cachedSources = []
         if (!pickerWindow.isDestroyed()) {
           pickerWindow.webContents.send('screen-picker:sources', { requestId, sources: [] })
         }
@@ -856,8 +859,8 @@ const openDesktopSourcePickerWindow = async (parentWindow) => {
         return
       }
 
-      const latestSources = await listDesktopSources()
-      const selected = latestSources.find((source) => source.id === selectedId) || null
+      const sources = cachedSources || (await listDesktopSources())
+      const selected = sources.find((source) => source.id === selectedId) || null
       finish(selected)
 
       // After the picker closes, bring the selected window to the front

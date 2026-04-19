@@ -990,22 +990,29 @@ function ElectronScreenShareButton({
           onMessage('')
           return
         }
-        // Resize the picked window to match the recording frame
+        // Enter mini mode and resize immediately — don't block stream start
+        const miniModePromise = enterMiniModeAfterShare()
         if (pickedSource.kind === 'window' && shareTargetSize && window.electronAPI?.resizeSourceWindow) {
-          await window.electronAPI.resizeSourceWindow({
+          void window.electronAPI.resizeSourceWindow({
             sourceId: pickedSource.id,
             width: shareTargetSize.width,
             height: shareTargetSize.height,
-          }).catch(() => {/* ignore resize failure, share still proceeds */})
+          }).catch(() => {})
         }
-        await startFallbackShare(pickedSource.id)
-        await enterMiniModeAfterShare()
+        try {
+          await startFallbackShare(pickedSource.id)
+        } catch (shareError: any) {
+          // Stream failed — undo mini mode then re-throw so catch below shows the error
+          await miniModePromise
+          await exitMiniModeAfterShare()
+          throw shareError
+        }
         onMessage('')
         return
       }
 
+      void enterMiniModeAfterShare()
       await localParticipant.setScreenShareEnabled(true)
-      await enterMiniModeAfterShare()
       onMessage('')
     } catch (error: any) {
       onMessage(getScreenShareFriendlyError(error))
@@ -1020,6 +1027,7 @@ function ElectronScreenShareButton({
     onMessage,
     pending,
     enterMiniModeAfterShare,
+    exitMiniModeAfterShare,
     startFallbackShare,
     stopFallbackShare,
   ])
@@ -2096,7 +2104,7 @@ function DesktopConference({
 
     const intervalId = window.setInterval(() => {
       syncFocusStageAmbientBackdrop()
-    }, 900)
+    }, 2500)
 
     syncFocusStageAmbientBackdrop()
 

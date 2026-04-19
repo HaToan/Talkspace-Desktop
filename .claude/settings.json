@@ -26,7 +26,15 @@
       "Bash(\"d:/vxspace/talkspace-desktop/node_modules/ffmpeg-static/ffmpeg.exe\" -version)",
       "Bash(grep -v \"css\\\\|CSS\\\\|style\\\\|Style\\\\|\\\\\\\\.desktop\\\\|className.*desktop\")",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(awk -F: '{if \\($2 > 3900\\) print}')",
+      "Bash(awk 'NR>=3960 && NR<=4100 && /record/' \"d:/vxspace/talkspace-desktop/src/components/LiveVideoStage.tsx\")",
+      "Bash(awk -F: '$2 > 4000')",
+      "Bash(grep -v \"className=\\\\|<\\\\|//\")",
+      "Bash(awk -F: '{n=$1; line=$0; if\\(n>4000\\) print}')",
+      "Bash(awk -F: 'int\\($1\\)>3000')",
+      "Bash(grep -n \"useEffect.*\\\\[\\\\\\)$\" /d/vxspace/talkspace-desktop/src/components/LiveVideoStage.tsx)",
+      "Bash(grep -n \"useEffect.*\\\\[\\\\\\)\\\\$\" /d/vxspace/talkspace-desktop/src/components/LiveVideoStage.tsx)"
     ]
   }
 }

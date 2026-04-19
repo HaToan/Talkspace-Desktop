@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, FormEvent, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import {
@@ -11,7 +11,7 @@ import {
   UserProfile,
 } from './types'
 import AuthScreen from './components/AuthScreen'
-import LiveVideoStage from './components/LiveVideoStage'
+const LiveVideoStage = lazy(() => import('./components/LiveVideoStage'))
 import { logoutAccount } from './services/auth'
 import {
   type InviteLookupUser,
@@ -3574,7 +3574,7 @@ function ConferenceView({
   return (
     <div className="conference-layout">
       <div className="conference-main conference-main-meeting">
-
+        <Suspense fallback={<div className="conference-loading" />}>
         <LiveVideoStage
           key={`${room.id}:${token ?? 'no-token'}`}
           token={token}
@@ -3609,6 +3609,7 @@ function ConferenceView({
           onLeave={onLeave}
           onRequestSpeaker={onRequestSpeaker}
         />
+        </Suspense>
       </div>
 
       {chatOpen && (

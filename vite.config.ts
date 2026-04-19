@@ -28,6 +28,14 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'livekit': ['livekit-client', '@livekit/components-react', '@livekit/components-core'],
+            'vendor': ['react', 'react-dom'],
+          },
+        },
+      },
     },
   }
 })
